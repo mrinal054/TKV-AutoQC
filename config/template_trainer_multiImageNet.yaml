@@ -1,0 +1,112 @@
+model:
+  name: MultiImageNet
+  subname: null  # Optional alias, can leave as 'base' or null
+  suffix: DenseNet121_cosine_reg_v3 # !!! MUST provide a unique suffix to prevent overwriting. Will also be used to resume training.
+  in_channels: 1
+  out_channels: null
+  dropout: 0.25
+  pretrained_path: null #/scratch/abbydev/dtcls_repo_v2/weights/resnet_18_23dataset.pth  # path to MedicalNet weights
+  freeze_backbone: False # required for multiImageNet
+  unfreeze_epoch: null # 100
+  
+  # MultiImageNet-specific parameters:
+  dummy_size: [1,1,64,128,128]
+  config_path: networks/config_multiImageNet.yaml
+  
+train:
+  epochs: 300 
+  backbone_lr: 0.00015
+  classifier_lr: 0.00015
+  optimizer: adam
+  scheduler:
+    type: cosine_warmup # available: cosine_warmup, cosine_warmup_v2 (does not have base lr), default: ReduceLROnPlateau
+    warmup_epochs: 25
+    min_lr: 1e-6
+  weight_decay: 0.001
+  save_weights_only: True
+  save_best_model: True 
+  save_last_model: True
+  one_hot: False
+  period: 20
+  early_stop: False
+  patience: 25
+  batch_size: 8                 
+  n_classes: 3
+  kfold: 5
+  kfold_seed: 42 # random seed used to generate k-fold
+  run_folds: [0] # null # a list (e.g. [0,1]) or null. null means run all folds
+  retrain: 
+    resume_train: False
+    resume_folds: [0] # must be a list 
+  device: cuda
+
+test:
+  base_model_name: null  # MultiImageNet_eGFR_001 
+  type: average
+
+phase: train # either train, test, or both
+
+classification_type: multiclass # either binary, multiclass or multilabel
+
+directories:
+  root: /scratch/abbydev/dtcls_repo_v2/
+  excel_train_dir: /scratch/abbydev/dataset/stratified_split_v4_images/AccRejRew_MULTICLASS_Multi_Abby_train_v4-3.xlsx
+  excel_test_dir: /scratch/abbydev/dataset/stratified_split_v4_images/AccRejRew_MULTICLASS_Multi_Abby_val_v4-3.xlsx
+  result_dir: /scratch/abbydev/results_multiclass_multi-input_image_only_v4/
+  
+data:
+  dataloader: loaderv5 # which loader to use as dataloader.
+  label_column: Labels # ['Accept', 'Reject', 'Rework'] # column names of labels # previously: label_names.
+  dir_column: [Directories_1, Seg_dirs, Directories_2] # name of the column in the dataframe that lists image directories (full path). Newly added.
+  binary_mask: [null, null, [1,2]] # these labels will be used to generate ROI
+  mask_column: [null, null, Seg_dirs] # these columns have directories to mask 
+  use_sampler: True # If true it will do a per-epoch balanced sampling
+  resample: [5.0, null, null] 
+  n_zSlices: 82
+  zSlices_pad_value: 0
+  clip: null
+  clip_percentile: [0.5, 99]
+  normalize: True
+  resize: [64, 128, 128] # DHW
+  resize_method: 'interpolation'
+  resize_pad_value: 0
+  n_workers: 8
+
+transform:
+  do_transform: True 
+  transform_keys: ["transform1", "transform1", "transform1"]
+  transform1:
+      RandFlip:
+        spatial_axis: 0
+        prob: 0.5
+      RandRotate:
+        range_x: 0.25
+        range_y: 0.25
+        range_z: 0.25
+        keep_size: True
+        mode: nearest # bilinear
+        prob: 0.5
+      RandScaleIntensity:
+        factors: [0.95, 1.05]
+        prob: 0.5
+      RandGaussianNoise:
+        mean: 0.0
+        std: 0.02
+        prob: 0.5
+      RandBiasField:
+        coeff_range: [0.1, 0.3]
+        prob: 0.5
+      RandGaussianSmooth:
+        sigma_x: [0.3, 0.3]
+        sigma_y: [0.3, 0.3]
+        sigma_z: [0.3, 0.3]
+        prob: 0.5
+        
+  transform2: null
+          
+metric:
+  metric_mode: weighted
+
+loss:
+  name: ce
+  weights: null

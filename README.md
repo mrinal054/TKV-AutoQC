@@ -38,7 +38,7 @@ dtcls_repo/
 │── config/                     # YAML configs for preprocessing and model training
 │── dataloader/                 # Dataloader scripts
 │── documents/                  # Pipeline documentation
-    │── TKV_AutoQC_README.md    # Project documentation (this file)
+│── TKV_AutoQC_README.md        # Project documentation (this file)
 │── losses/                     # Loss functions
 │── network_parameters/         # Network parameters for each model
 |── networks/                   # Model definitions (ResNetClassifier, DenseNet, ViT, etc.)
@@ -95,7 +95,7 @@ dataset/stratified_split_v*/
     └── Rework/
 
 ```
-3. Run Excel generation script to create the input files for the model. This script has tags to change the Excel format depending on which task the user wants to run (Acc/Rew vs Reject, Accept vs Rework, or multiclass). The output Excels meet the requirements outlined in the following section. 
+3. Run Excel generation script to create the input files for the model. This script has tags to change the Excel format depending on which task the user wants to run (Acc/Rew vs Reject, Accept vs Rework, or multiclass). The output Excels meet the trainer input requirements outlined in the following section. 
     - `GenerateInputExcel_Flexible.py`
 
 
@@ -291,14 +291,9 @@ transform:
 ## Usage
 
 ### Training and Inference
-To run single-input training, use the following command:
+To run training, use the following command:
 ```
-python trainer_BcMcc_v4.py --config config/example.yaml
-```
-
-To run multi-input training, use the following command:
-```
-python trainer_multiImageNet_v1.py --config configs/multi_input_example.yaml
+python trainer_multiImageNet_v1_1.py --config configs/multi_input_example.yaml
 ```
 
 - Training, inference, or both will run depending on which phase the user specifies in the YAML file.

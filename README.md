@@ -314,8 +314,8 @@ TKV AutoQC generates:
 
 Example plots:
 
-![alt text](ImageLatentsClassifier_ImgOnly_WD001_frozen_v6_2025-11-07_16-11-58_loss.png)
-![alt text](ImageLatentsClassifier_ImgOnly_WD001_frozen_v6_2025-11-07_16-11-58_lr.png)
+![alt text](/documents/ImageLatentsClassifier_ImgOnly_WD001_frozen_v6_2025-11-07_16-11-58_loss.png)
+![alt text](/documents/ImageLatentsClassifier_ImgOnly_WD001_frozen_v6_2025-11-07_16-11-58_lr.png)
 
 All results are written to timestamped folders under the folder specified in the YAML.
  

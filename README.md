@@ -44,7 +44,7 @@ dtcls_repo/
 |── networks/                   # Model definitions (ResNetClassifier, DenseNet, ViT, etc.)
 │── utils/                      # Shared helper modules
 │── weights/                    # Pretrained weights for MedicalNet ResNet18
-│── scripts/                    # Environment setup, dataset preparation, and additional visualization utilities
+│── preparation_scripts/        # Environment setup, dataset preparation, and additional visualization utilities
 ```
 
 **Installation**
@@ -67,7 +67,7 @@ required for preprocessing, dataset construction, training, and visualization.
 
 **Building Your Dataset**
 
-TKV AutoQC provides tools to create stratified dataset splits.
+TKV AutoQC provides tools to create stratified dataset splits and generate the input Excel sheet required by the trainer file. These codes can be found in the **preparation_scripts** folder.
 
 Steps:
 1. Place MRI volumes `*_0000.nii.gz` and corresponding segmentation masks `*.nii.gz` in unified directories. Scripts assume images are in Accept/Reject/Rework subdirectories and masks are in a single flat directory.
@@ -100,14 +100,20 @@ dataset/stratified_split_v*/
 
 
 ### Input Requirements
-**Required Columns (all modes)**
+
+**Trainer column requirements**
+
+The trainer requires the columns referenced in `data.label_column` and `data.dir_column`. Additional columns are only required if they are referenced in `data.mask_column` or used as extra MultiImageNet streams. `Names` and `Str_Label` are recommended for traceability, but the training code is driven by the YAML column mappings rather than fixed column names.
+
+**Commonly used columns in this repository**
+
 | Column          | Description                                          |
 | --------------- | ---------------------------------------------------- |
-| **Names**       | Base filename of MRI                                 |
-| **Directories** | Path to MRI file                                     |
-| **Labels**      | Integer labels                                       |
-| **Str_Label**   | Accept / Reject / Rework                             |
-| **Seg_dirs**    | Path to segmentation mask file                       |
+| **Names**       | Case or file identifier                              |
+| **Directories** | Full path(s) to image input(s)                       |
+| **Labels**      | Integer class labels                                 |
+| **Str_Label**   | String class labels                                  |
+| **Seg_dirs**    | Full path to segmentation mask                       |
 
 **Additional Columns for Multi-Input Mode**
 
@@ -121,9 +127,17 @@ Uses a single MRI volume + optional segmentation mask per sample.
 
 **Multi-Input Pipeline (MultiImageNet)**
 
- - Consumes two or more correlated inputs processed in parallel.
- - Inputs are stacked or routed into separate network branches.
- 
+MultiImageNet uses a secondary YAML file to define one backbone per input stream.
+
+During loading, the spreadsheet columns listed in `data.dir_column` are read in order and passed to the corresponding backbones in the same order. Each backbone should return a pooled feature vector of shape `[B, C]`. MultiImageNet concatenates those feature vectors across branches and passes the combined representation through a shared classification head.
+
+This supports experiments that combine different MRI sequences, segmentation volumes, ROI-masked images, or multiple differently processed views of the same case.
+
+For full details of the MultiImageNet architecture and branch configuration, please refer to:
+```txt
+documents/model_multiImageNet.md
+```
+
 **Architecture**
 
 Uses the **MultiImageNet** framework developed by **Mrinal K. Dhar.**
@@ -151,8 +165,8 @@ model:
 ```
 
 Models are dynamically loaded using:
-```
-getattr(nets, config.model.name)
+```python
+getattr(networks, config.model.name)
 ```
 Feature dimensions are inferred automatically via a dummy forward pass.
 
@@ -187,10 +201,13 @@ train:
 ```
 - Optimizers, `adam`, `adamw`
 - Schedulers: ReduceLROnPlateau, cosine_warmup, cosine_warmup_v2 (no base LR)
-- `kfold` controls cross-validation folds; set to `null` or `1` to disable.
-- `run_folds`: a list (e.g. [0,1] or null to run all folds)
+- `kfold`: number of folds used by `StratifiedKFold` during training. Use an integer `>= 2`.
+- `run_folds`: optional list of fold indices to train (for example `[0]` or `[0, 1]`). Set to `null` to run all folds.
+- `retrain.resume_folds`: list of fold indices to resume when `resume_train: True`.
 
 ### Dataset Inputs, Outputs, and Execution Phase
+
+> **Note on split usage:** The dataset-preparation scripts can produce `train`, `val`, and `test` Excel logs. During training, the trainer reads `excel_train_dir` and creates internal fold-level train/validation splits from that sheet. `excel_test_dir` is used as the held-out evaluation sheet during `phase: test` or `phase: both`. The created 'val' Excel log can be used for 'excel_test_dir' during model development, and the created 'test' Excel log can be used for final evaluation.
 
 Dataset routing, Excel input files, output directories, and pipeline phase are all YAML-controlled.
 No command-line arguments are required beyond specifying the config itself.

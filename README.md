@@ -56,7 +56,7 @@ conda activate tkv_autoqc
 
 2. Install dependencies
 ```
-pip install -r requirements.txt
+pip install -r TKV_AutoQC_requirements.txt
 ```
 
 Dependencies include PyTorch, MONAI, NumPy, SciPy, SimpleITK, pandas,

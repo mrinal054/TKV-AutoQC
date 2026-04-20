@@ -127,24 +127,17 @@ Uses a single MRI volume + optional segmentation mask per sample.
 
 **Multi-Input Pipeline (MultiImageNet)**
 
+Uses the **MultiImageNet** framework developed by **Mrinal K. Dhar.**
+
 MultiImageNet uses a secondary YAML file to define one backbone per input stream.
 
 During loading, the spreadsheet columns listed in `data.dir_column` are read in order and passed to the corresponding backbones in the same order. Each backbone should return a pooled feature vector of shape `[B, C]`. MultiImageNet concatenates those feature vectors across branches and passes the combined representation through a shared classification head.
 
 This supports experiments that combine different MRI sequences, segmentation volumes, ROI-masked images, or multiple differently processed views of the same case.
 
-For full details of the MultiImageNet architecture and branch configuration, please refer to:
-```txt
-documents/model_multiImageNet.md
-```
-
-**Architecture**
-
-Uses the **MultiImageNet** framework developed by **Mrinal K. Dhar.**
-
 For full details of the MultiImageNet architecture, configuration, 
 and multi-stream feature extraction, please refer to:
-```
+```txt
 documents/model_multiImageNet.md
 ```
 
@@ -156,12 +149,18 @@ All preprocessing, model architecture, and training behavior is controlled via Y
 model:
   name: MedicalNetResNet18Classifier
   subname: resnet18
+  suffix: DenseNet121_v1
   in_channels: 1
+  out_channels: [256, 128]
   dropout: 0.0
   pretrained_path: /path/to/weights.pth
   freeze_backbone: true
   unfreeze_epoch: 100
   input_shape: [64, 128, 128]
+
+  #MultiImageNet-specific parameters:
+  dummy_size: [1, 1, 64, 128, 128]
+  config_path: networks/config_multiImageNet.yaml
 ```
 
 Models are dynamically loaded using:
@@ -213,6 +212,14 @@ Dataset routing, Excel input files, output directories, and pipeline phase are a
 No command-line arguments are required beyond specifying the config itself.
 
 ```yaml
+test:
+  base_model_name: null  # MultiImageNet_eGFR_001 
+  type: average
+
+phase: train # either train, test, or both
+
+classification_type: multiclass # either binary, multiclass or multilabel
+
 directories:
   root: /scratch/abbydev/dtcls_repo_v2/
   excel_train_dir: /path/to/train.xlsx
@@ -220,6 +227,7 @@ directories:
   result_dir: /path/to/output_directory/
 ```
 - `phase`: controls whether to run training, testing, or both sequentially.
+- `base_model_name`: controls which trained model to use if running inference independently.
 - All results (checkpoints, logs, CSVs, plots, TensorBoard summaries) are saved to timestamped subfolders under `result_dir`.
 
 **Data Loading**

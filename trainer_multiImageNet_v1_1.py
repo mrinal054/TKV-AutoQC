@@ -1,6 +1,21 @@
 """
 Author: Mrinal Kanti Dhar
-January 2026        
+May 20, 2025
+
+Last modified: Oct 28, 2025
+
+v1_0: Base structure
+v1_1: Per-class anaylysis in training, retrain introduced
+v1_2: Supports both binary classification and multi-label classification
+BcMcc_v1: For binary and multiclass, supports k-fold CV, and retrain.
+BcMcc_v2: label shape adjusted. AUC corrected.
+BcMcc_v3: Optimizer and LR are now specified in config file. AdamW added. 
+          Suffix added. Weights unfreezing added. 
+BcMcc_v4: Dynamically loads dataloader from config file. Weights are passed to loss function. 
+          lr curve added. run_one_fold added in config.
+multiImageNet_v1: Modified for multi-image models. E.g., handles separate transform for separate image.
+multiImageNet_v1_1: Sampler added.
+         
 """
 
 print('************ The code is loaded ************')
@@ -19,7 +34,7 @@ sys.path.append(os.getcwd() + '/config/')
 
 #%% Imports
 import dataloader
-from transforms_v2 import monai_pipeline # for augmentation, importing from utils
+from transforms_v2 import monai_pipeline, make_multi_input_augmentor # for augmentation, importing from utils
 # from networks import nets
 import networks
 from network_parameters.params import model_params 
@@ -67,6 +82,16 @@ with open(args.config, "r") as file:
     config = yaml.safe_load(file)
 config = Box(config)
 
+# Convert Box/list/dict config objects to regular Python objects.
+def _box_to_builtin(value):
+    if isinstance(value, Box):
+        return value.to_dict()
+    if isinstance(value, list):
+        return [_box_to_builtin(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _box_to_builtin(v) for k, v in value.items()}
+    return value
+
 #%% Parameters
 DEVICE = config.train.device
 EPOCHS = config.train.epochs
@@ -104,25 +129,231 @@ FREEZE_BACKBONE = config.model.freeze_backbone
 UNFREEZE_EPOCH = config.model.unfreeze_epoch
 USE_SAMPLER = config.data.use_sampler
 
+# Optional mask-aware preprocessing controls. If omitted, behavior matches the old
+# image-like preprocessing for every input.
+N_INPUTS = len(DIR_COLUMN) if isinstance(DIR_COLUMN, list) else 1
+DATA_INPUT_TYPES = _box_to_builtin(config.data.get("input_types", None))
+TRANSFORM_INPUT_TYPES = _box_to_builtin(config.transform.get("input_types", None)) if hasattr(config, "transform") else None
+INPUT_TYPES = DATA_INPUT_TYPES if DATA_INPUT_TYPES is not None else TRANSFORM_INPUT_TYPES
+PRESERVE_MASK_LABELS = bool(config.data.get("preserve_mask_labels", True))
+MASK_INPUT_MODES = _box_to_builtin(config.data.get("mask_input_modes", None))
+MASK_KEEP_VALUES = _box_to_builtin(config.data.get("mask_keep_values", None))
+
 #%% Directories
 root = config.directories.root
 result_dir = config.directories.result_dir
 
 #%% Augmentation
-if TRANSFORM: # if true, list all transform pipelines including None
-    transform_list = []
-    transform_keys = config.transform.transform_keys # e.g. ["transform1", "transform2"]
-    for t_key in transform_keys:
-        # Get transform dictionary 
-        t_dict = getattr(config.transform, t_key) # format: Box({}) if not None
-        
-        if isinstance(t_dict, Box): t_dict = t_dict.to_dict() # remove Box and keep only the dictionary
-        
-        # Append transform pipeline
-        if t_dict is None: transform_list.append(None) # no augmentation for this image
-        else: transform_list.append(monai_pipeline(t_dict)) # append transform pipeline for this image
-        
-    transforms = transform_list # return all transforms
+def _box_to_builtin(value):
+    """Convert Box/list/dict config objects to regular Python objects."""
+    if isinstance(value, Box):
+        return value.to_dict()
+    if isinstance(value, list):
+        return [_box_to_builtin(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _box_to_builtin(v) for k, v in value.items()}
+    return value
+
+
+_INTENSITY_TRANSFORM_NAMES = {
+    "RandScaleIntensity",
+    "RandShiftIntensity",
+    "RandGaussianNoise",
+    "RandGaussianSmooth",
+    "RandBiasField",
+    "RandAdjustContrast",
+    "RandHistogramShift",
+    "RandRicianNoise",
+    "RandGibbsNoise",
+    "RandKSpaceSpikeNoise",
+    "RandCoarseDropout",
+    "RandCoarseShuffle",
+}
+
+_SPATIAL_TRANSFORMS_WITH_MODE = {
+    "RandRotate",
+    "RandAffine",
+    "RandZoom",
+    "Rand3DElastic",
+    "RandGridDistortion",
+}
+
+_MASK_TYPE_NAMES = {"mask", "seg", "label", "segmentation"}
+
+
+def _as_config_list(value, n, default=None, name="value"):
+    """Expand a scalar/None/list configuration to length n."""
+    value = _box_to_builtin(value)
+    if value is None:
+        return [default] * n
+    if isinstance(value, list):
+        if len(value) != n:
+            raise ValueError(f"{name} has length {len(value)}, expected {n}.")
+        return value
+    return [value] * n
+
+
+def _is_mask_input_type(input_type):
+    return str(input_type).lower() in _MASK_TYPE_NAMES
+
+
+def _should_apply_intensity_to_input(input_idx, input_type, intensity_apply_to):
+    """Return whether intensity transforms should remain for this input in legacy mode."""
+    intensity_apply_to = _box_to_builtin(intensity_apply_to)
+    if intensity_apply_to is None:
+        return True
+    if isinstance(intensity_apply_to, str):
+        mode = intensity_apply_to.lower()
+        if mode in {"all", "true", "on"}:
+            return True
+        if mode in {"none", "false", "off"}:
+            return False
+        if mode in {"images", "image"}:
+            return not _is_mask_input_type(input_type)
+        raise ValueError(
+            "intensity_apply_to must be 'images', 'all', 'none', or a list of input indices."
+        )
+    return int(input_idx) in {int(v) for v in intensity_apply_to}
+
+
+def _adapt_transform_dict_for_legacy_input(
+    transform_dict,
+    input_idx,
+    input_type,
+    intensity_apply_to="all",
+    force_mask_nearest=True,
+    mask_interpolation="nearest",
+):
+    """
+    Optional legacy-mode safety filter.
+
+    This preserves transform_mode='legacy' semantics: each input still gets its own
+    transform pipeline and its own random decisions. The only optional change is that
+    mask inputs can have intensity transforms removed and spatial interpolation forced
+    to nearest-neighbor.
+    """
+    transform_dict = _box_to_builtin(transform_dict)
+    if transform_dict is None:
+        return None
+
+    is_mask = _is_mask_input_type(input_type)
+    keep_intensity = _should_apply_intensity_to_input(input_idx, input_type, intensity_apply_to)
+
+    adapted = {}
+    for name, params in transform_dict.items():
+        if is_mask and (not keep_intensity) and name in _INTENSITY_TRANSFORM_NAMES:
+            continue
+
+        params = deepcopy(params or {})
+        if is_mask and force_mask_nearest and name in _SPATIAL_TRANSFORMS_WITH_MODE:
+            params["mode"] = mask_interpolation
+
+        adapted[name] = params
+
+    return adapted if adapted else None
+
+if TRANSFORM:
+    transform_mode = config.transform.get("transform_mode", "shared_spatial")
+    
+    if transform_mode in {"legacy", "legacy_channel_first"}:
+        print(
+            "\n[WARNING] Legacy transform mode is enabled. "
+            "Random spatial transformations are sampled independently for each "
+            "input stream, so alignment among the full scan, mask, and masked "
+            "scan is not guaranteed. Use transform_mode='shared_spatial' for "
+            "new multi-input experiments.\n"
+        )
+
+    if transform_mode in {"legacy", "legacy_channel_first"}:
+        # Original behavior: one transform pipeline per input stream. If the same
+        # transform key is repeated, the recipe is the same, but random decisions
+        # are sampled independently for each stream.
+        #
+        # User-driven MONAI axis fix:
+        #   legacy + monai_channel_first=False -> exact old behavior
+        #   legacy + monai_channel_first=True  -> independent transforms, but MONAI sees C,D,H,W
+        #   legacy_channel_first               -> same as above, shortcut mode name
+        monai_channel_first = bool(
+            config.transform.get("monai_channel_first", False)
+            or transform_mode == "legacy_channel_first"
+        )
+
+        transform_list = []
+        transform_keys = config.transform.transform_keys # e.g. ["transform1", "transform2"]
+
+        # Optional legacy-mode mask safety. This does not synchronize random decisions;
+        # it only lets mask inputs avoid intensity transforms and use nearest interpolation.
+        legacy_respect_input_types = bool(config.transform.get("legacy_respect_input_types", False))
+        legacy_input_types = _as_config_list(
+            INPUT_TYPES,
+            len(transform_keys),
+            default="image",
+            name="input_types",
+        )
+        intensity_apply_to = config.transform.get("intensity_apply_to", "all")
+        force_mask_nearest = bool(config.transform.get("force_mask_nearest", True))
+        mask_interpolation = config.transform.get("mask_interpolation", "nearest")
+
+        for input_idx, t_key in enumerate(transform_keys):
+            t_dict = getattr(config.transform, t_key) # format: Box({}) if not None
+            t_dict = _box_to_builtin(t_dict)
+
+            if legacy_respect_input_types:
+                t_dict = _adapt_transform_dict_for_legacy_input(
+                    transform_dict=t_dict,
+                    input_idx=input_idx,
+                    input_type=legacy_input_types[input_idx],
+                    intensity_apply_to=intensity_apply_to,
+                    force_mask_nearest=force_mask_nearest,
+                    mask_interpolation=mask_interpolation,
+                )
+
+            if t_dict is None:
+                transform_list.append(None) # no augmentation for this image
+            else:
+                transform_list.append(monai_pipeline(t_dict, channel_first=monai_channel_first))
+
+        transforms = transform_list # return all transforms
+
+    elif transform_mode == "shared_spatial":
+        # New behavior: one sample-level augmentor. Spatial transforms are shared
+        # across all inputs. Intensity transforms can be restricted to image-like
+        # inputs using input_types and intensity_apply_to.
+        transform_keys = config.transform.transform_keys
+        source_key = config.transform.get("shared_transform_key", None)
+
+        if source_key is None:
+            source_key = None
+            for t_key in transform_keys:
+                if getattr(config.transform, t_key) is not None:
+                    source_key = t_key
+                    break
+
+        if source_key is None:
+            transforms = None
+        else:
+            t_dict = getattr(config.transform, source_key)
+            t_dict = _box_to_builtin(t_dict)
+
+            n_inputs = len(DIR_COLUMN) if isinstance(DIR_COLUMN, list) else 1
+            label_swap_after_flip = _box_to_builtin(config.transform.get("label_swap_after_flip", None))
+
+            transforms = make_multi_input_augmentor(
+                transform_dict=t_dict,
+                num_inputs=n_inputs,
+                input_types=_box_to_builtin(config.transform.get("input_types", INPUT_TYPES)),
+                intensity_apply_to=config.transform.get("intensity_apply_to", "images"),
+                intensity_sync_across_inputs=config.transform.get("intensity_sync_across_inputs", True),
+                mask_interpolation=config.transform.get("mask_interpolation", "nearest"),
+                force_mask_nearest=config.transform.get("force_mask_nearest", True),
+                left_right_spatial_axis=config.transform.get("left_right_spatial_axis", 2),
+                label_swap_after_flip=label_swap_after_flip,
+            )
+
+    else:
+        raise ValueError(
+            f"Unsupported transform_mode={transform_mode}. Use 'legacy', 'legacy_channel_first', or 'shared_spatial'."
+        )
 else:
     transforms = None # return None -> no augmentation
 
@@ -299,6 +530,14 @@ def run_one_epoch(epoch_index, loader, model, loss_fn, optimizer=None,
             inputs = inputs.to(device)
 
         labels = labels.to(device)
+        
+        # DEBUG: print shapes once (first batch of first epoch)
+        if i == 0 and epoch_index == 0:
+            if isinstance(inputs, (list, tuple)):
+                for j, x in enumerate(inputs):
+                    print(f"[DEBUG] Input {j} shape: {x.shape}")
+            else:
+                print(f"[DEBUG] Input shape: {inputs.shape}")
 
         if is_train:
             optimizer.zero_grad()
@@ -576,10 +815,16 @@ if config.phase == "train" or config.phase == "both":
             
             "Loss function"
             if config.loss.weights is not None:
-                weights = torch.tensor(config.loss.weights, dtype=torch.float32).cuda()
+                weights = torch.tensor(
+                    config.loss.weights, 
+                    dtype=torch.float32,
+                    device=device
+                )
             else: weights = None
+            
+            label_smoothing = getattr(config.loss, 'label_smoothing', 0.0)
     
-            loss_fn = loss_func(config.loss.name, weights)
+            loss_fn = loss_func(config.loss.name, weights, label_smoothing=label_smoothing)
             
             "Resume training"
             if RESUME_TRAIN:
@@ -657,7 +902,11 @@ if config.phase == "train" or config.phase == "both":
                                         resize=RESIZE, # (D,H,W)
                                         resize_method=RESIZE_METHOD,
                                         resize_pad_value=RESIZE_PAD_VALUE,
-                                        transform=transforms, 
+                                        transform=transforms,
+                                        input_types=INPUT_TYPES,
+                                        preserve_mask_labels=PRESERVE_MASK_LABELS,
+                                        mask_input_modes=MASK_INPUT_MODES,
+                                        mask_keep_values=MASK_KEEP_VALUES,
                                         verbose=False,
                                         )
     
@@ -678,7 +927,11 @@ if config.phase == "train" or config.phase == "both":
                                         resize=RESIZE, # (D,H,W)
                                         resize_method=RESIZE_METHOD,
                                         resize_pad_value=RESIZE_PAD_VALUE,
-                                        transform=None, 
+                                        transform=None,
+                                        input_types=INPUT_TYPES,
+                                        preserve_mask_labels=PRESERVE_MASK_LABELS,
+                                        mask_input_modes=MASK_INPUT_MODES,
+                                        mask_keep_values=MASK_KEEP_VALUES,
                                         verbose=False,
                                         )
             
@@ -955,14 +1208,18 @@ if config.phase == "both" or config.phase == "test":
                                 resize=RESIZE, # (D,H,W)
                                 resize_method=RESIZE_METHOD,
                                 resize_pad_value=RESIZE_PAD_VALUE,
-                                transform=None, 
+                                transform=None,
+                                input_types=INPUT_TYPES,
+                                preserve_mask_labels=PRESERVE_MASK_LABELS,
+                                mask_input_modes=MASK_INPUT_MODES,
+                                mask_keep_values=MASK_KEEP_VALUES,
                                 verbose=False,
                                     )
 
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=N_WORKERS)
 
     # Test save directory
-    test_save_dir = os.path.join(result_dir, base_model_name, 'results_test')
+    test_save_dir = os.path.join(result_dir, base_model_name, 'results_TESTSET_test')
     os.makedirs(test_save_dir, exist_ok=True)
 
     # # Find the best model name from the k-fold summary report

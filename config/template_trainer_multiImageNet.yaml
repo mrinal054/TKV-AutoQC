@@ -5,9 +5,9 @@ model:
   in_channels: 1
   out_channels: null
   dropout: 0.25
-  pretrained_path: null #/scratch/abbydev/dtcls_repo_v2/weights/resnet_18_23dataset.pth  # path to MedicalNet weights
+  pretrained_path: null 
   freeze_backbone: False # required for multiImageNet
-  unfreeze_epoch: null # 100
+  unfreeze_epoch: null 
   
   # MultiImageNet-specific parameters:
   dummy_size: [1,1,64,128,128]
@@ -41,25 +41,35 @@ train:
   device: cuda
 
 test:
-  base_model_name: null  # MultiImageNet_eGFR_001 
+  base_model_name: null  
   type: average
 
-phase: train # either train, test, or both
+phase: train
 
 classification_type: multiclass # either binary, multiclass or multilabel
 
 directories:
-  root: /scratch/abbydev/dtcls_repo_v2/
-  excel_train_dir: /scratch/abbydev/dataset/stratified_split_v4_images/AccRejRew_MULTICLASS_Multi_Abby_train_v4-3.xlsx
-  excel_test_dir: /scratch/abbydev/dataset/stratified_split_v4_images/AccRejRew_MULTICLASS_Multi_Abby_val_v4-3.xlsx
-  result_dir: /scratch/abbydev/results_multiclass_multi-input_image_only_v4/
+  root: /path/to/repo
+  excel_train_dir: /path/to/train_set_file.xlsx
+  excel_test_dir: /path/to/test_set_file.xlsx
+  result_dir: /path/to/results_dir
   
 data:
   dataloader: loaderv5 # which loader to use as dataloader.
-  label_column: Labels # ['Accept', 'Reject', 'Rework'] # column names of labels # previously: label_names.
-  dir_column: [Directories_1, Seg_dirs, Directories_2] # name of the column in the dataframe that lists image directories (full path). Newly added.
+  label_column: Labels # ['Accept', 'Reject', 'Rework'] # column names of labels 
+  
+  # Three MultiImageNet inputs:
+  # 0 = full scan, 1 = segmentation mask, 2 = masked scan
+  dir_column: [Directories_1, Seg_dirs, Directories_2] # name of the column in the dataframe that lists image directories (full path). 
   binary_mask: [null, null, [1,2]] # these labels will be used to generate ROI
   mask_column: [null, null, Seg_dirs] # these columns have directories to mask 
+  
+  # Mask-aware processing for the second input
+  input_types: ["image", "mask", "image"]
+  preserve_mask_labels: True
+  mask_input_modes: [null, "binary", null]
+  mask_keep_values: [null, [1, 2], null]
+  
   use_sampler: True # If true it will do a per-epoch balanced sampling
   resample: [5.0, null, null] 
   n_zSlices: 82
@@ -74,17 +84,46 @@ data:
 
 transform:
   do_transform: True 
+  transform_mode: shared_spatial 
+  
   transform_keys: ["transform1", "transform1", "transform1"]
+  shared_transform_key: transform1
+  
+  # input 0 = Directories_1
+  # input 1 = Seg_dirs
+  # input 2 = Directories_2
+  input_types: ["image", "mask", "image"]
+  
+  # Apply intensity transforms only to non-mask inputs.
+  intensity_apply_to: images
+
+  # Synchronize intensity augmentation across image inputs only.
+  intensity_sync_across_inputs: True
+
+  # Keep mask interpolation label-preserving for spatial transforms.
+  mask_interpolation: nearest
+  force_mask_nearest: True
+
+  # Your chosen lateral flip axis after MONAI channel-first correction:
+  # C x D x H x W, so spatial_axis 2 = W/X = lateral axis in your assumed coronal view.
+  left_right_spatial_axis: 2
+
+  # Leave null if you do not want 1 <-> 2 relabeling after lateral flip.
+  label_swap_after_flip: null
+    #1:
+      #1: 2
+      #2: 1
+  
   transform1:
       RandFlip:
-        spatial_axis: 0
+        spatial_axis: 2 # For C,D,H,W tensors, spatial axis 2 is W/X (lateral)
         prob: 0.5
       RandRotate:
         range_x: 0.25
         range_y: 0.25
         range_z: 0.25
         keep_size: True
-        mode: nearest # bilinear
+        mode: bilinear # nearest
         prob: 0.5
       RandScaleIntensity:
         factors: [0.95, 1.05]

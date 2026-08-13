@@ -1,78 +1,75 @@
 """
-Mrinal @ 6 June 2025
+Mask-aware, user-driven v5 dataloader for TKV AutoQC.
 
-Last modified @ 12 November 2025
-
-v1: Base implementation
-v2: zero-padding along z-axis after resampling added (n_zSlices)
-v3: Supports binary, multi-class, and multi-label classification
-v4: Reads segmentation labels, creates binary mask, multiplies image with binary mask
-    Param dir_column added.
-v5: Supports multi-image loading with separate transforms and binary masking for each individual image.
+Key additions over the original loaderv5.py:
+  - input_types: per-input type, e.g. ["image", "mask", "image"]
+  - mask_input_modes: per-input mask representation, e.g. [None, "label", None]
+      * "label"/"preserve": preserve discrete labels such as 0/1/2
+      * "binary": convert selected mask labels to 0/1
+  - mask_keep_values: per-input keep values for binary mask inputs, e.g. [None, [1, 2], None]
+  - preserve_mask_labels: if True, mask inputs use nearest-neighbor resampling/resizing,
+    skip clipping/normalization, and are rounded back to integer-like values.
+  - shared multi-input augmentor support from the augmentation-fix path.
 """
 
 import sys
 sys.path.append("/research/m324371/Project/Digital_Twin/Classification/utils/")
-from utils import Utils3D 
-from typing import Union, List 
+
+from utils import Utils3D
+from typing import Union, List
 import os
 import torch
 from torch.utils.data import Dataset
 import numpy as np
 import SimpleITK as sitk
 
+
+_MASK_TYPE_NAMES = {"mask", "seg", "label", "segmentation"}
+_LABEL_MASK_MODES = {"label", "labels", "preserve", "regular", "categorical"}
+_BINARY_MASK_MODES = {"binary", "binarize", "binarized"}
+
+
 class ClsDataset(Dataset):
-    def __init__(self, 
+    def __init__(self,
                  dataframe,
                  dir_column: Union[List[str], str] = "Directories",
                  label_column: Union[List[str], str] = None,
-                 classification_type:str = "binary",  # 'binary', 'multiclass', or 'multilabel'
+                 classification_type: str = "binary",
                  binary_mask: Union[List, List[List]] = None,
                  mask_column: Union[str, List[str]] = None,
-                 onehot:bool = False,                  # For binary/multiclass classification
-                 resample:tuple = (1.0, 1.0, 1.0),
-                 n_zSlices:int = None,
-                 zSlices_pad_value:int = 0,
-                 clip:tuple = (-1000, 400),
-                 clip_percentile:tuple = None,
-                 normalize:bool = True,
-                 resize:tuple = (64, 128, 128),
-                 resize_method:str = "interpolation", # supports interpolation and center_crop
-                 resize_pad_value:int = -1, # used in center_crop 
-                 transform = None,
-                 verbose:bool = False):
+                 onehot: bool = False,
+                 resample: tuple = (1.0, 1.0, 1.0),
+                 n_zSlices: int = None,
+                 zSlices_pad_value: int = 0,
+                 clip: tuple = (-1000, 400),
+                 clip_percentile: tuple = None,
+                 normalize: bool = True,
+                 resize: tuple = (64, 128, 128),
+                 resize_method: str = "interpolation",
+                 resize_pad_value: int = -1,
+                 transform=None,
+                 input_types=None,
+                 preserve_mask_labels: bool = True,
+                 mask_input_modes=None,
+                 mask_keep_values=None,
+                 verbose: bool = False):
         """
         Unified dataset for binary, multiclass, and multilabel classification.
 
-        :param dataframe: DataFrame with at least 'Directories' and 'Labels' (or label columns for multilabel)
-        :param dir_column: Name of the column in the dataframe that lists image directories (full path).
-                           For multi-image loader, dir_column is a list of column names .
-                            Example for single-image loader: Image_paths
-                            Example for multi-image loader: [Image_paths, Mask_paths]
-        :param label_column: List (for multi-label) or str (for binary/multi-class) of column names that stores labels.
-        :param classification_type: Type of classification: 'binary', 'multiclass', or 'multilabel'
-        :param binary_mask: List or List of lists. For multi-image loader, length of dir_column and binary_mask
-                            have to be the same. 
-                            It creates binary mask using the list. e.g. for [1,2], 
-                            it will convert pixels 1 & 2 to 1, and remaining pixels to 0.
-                            If not None, later image will be multiplied by the mask.
-                            Example for single-image loader: [1,2]
-                            Example for multi-image loader: [None, [1,2], None] or None
-        :param mask_column: (list of str, optional) Path to the segmentation mask, used when binary_mask is provided.
-                            Example for single-image loader: Seg_dir
-                            Example for multi-image loader: [None, Seg_dir, None] or None
-        :param onehot: Whether to one-hot encode labels (for binary or multiclass)
-        :param resample: Tuple (D, H, W) for spacing; if None, skips resampling
-        :param n_zSlices: If specified, pads to a fixed number of slices along Z
-        :param zSlices_pad_value: Value used for padding along z-axis
-        :param clip: Tuple to clip image intensities (min, max). 
-        :param clip_percentile: Tuple to clip image intensities based on percentile value. Only works when clip is set to None. 
-        :param normalize: Normalize intensity values
-        :param resize: Output shape (D, H, W)
-        :param resize_method: the way resizing will be performed. Currently, supports interpolation and center_crop
-        :param resize_pad_value: Value used for padding in center cropping
-        :param transform: Optional transforms
-        :param verbose: Whether to print debugging info
+        Existing behavior is preserved when input_types is None. In that case, every
+        input is treated as an image-like volume, matching the original loader.
+
+        New mask-aware fields:
+            input_types: list like ["image", "mask", "image"]. Only entries marked
+                as mask/seg/label/segmentation are treated as masks.
+            preserve_mask_labels: if True, mask inputs skip image-intensity clipping
+                and normalization and use nearest-neighbor resampling/resizing.
+            mask_input_modes: list like [None, "label", None] or [None, "binary", None].
+                "label" preserves labels such as 0/1/2; "binary" converts selected
+                values to 0/1.
+            mask_keep_values: list like [None, [1, 2], None], used when a mask input
+                has mode "binary". If omitted, binary_mask for that input is used as
+                a fallback keep-value list.
         """
         self.df = dataframe
         self.dir_column = dir_column
@@ -91,6 +88,10 @@ class ClsDataset(Dataset):
         self.resize_method = resize_method
         self.resize_pad_value = resize_pad_value
         self.transform = transform
+        self.input_types = input_types
+        self.preserve_mask_labels = bool(preserve_mask_labels)
+        self.mask_input_modes = mask_input_modes
+        self.mask_keep_values = mask_keep_values
         self.verbose = verbose
 
         if classification_type not in ["binary", "multiclass", "multilabel"]:
@@ -98,385 +99,377 @@ class ClsDataset(Dataset):
 
     def __len__(self):
         return len(self.df)
-    
-    # Helper: load and preprocess ONE image
-    def _load_single_image(self, img_path, binary_mask=None, mask_path=None, transform=None):
-        """Return (tensor CxDxHxW, name_str)."""
-        img_name = os.path.basename(img_path)
-        
-        # Read NIfTI image
-        img_obj, img_arr, metadata = Utils3D.read_nifti(img_path)
-        if self.verbose: print(f"Original image shape in (D,H,W): {img_arr.shape} \n Original spacing in (Sx,Sy,Sz) or (W,H,D): {metadata['Spacing']}")
 
-        # Convert ChxDxHxW to DxHxW (rare cases)
-        if img_arr.ndim == 4: 
-            img_arr = img_arr[0]
-            if self.verbose: print(f"Original image is {img_arr.ndim} with "
-                                   f"{img_arr.shape[0]} channels. Taking only first channel")
+    @staticmethod
+    def _is_multi_input_augmentor(transform):
+        """Return True for sample-level multi-input augmentation objects."""
+        return getattr(transform, "is_multi_input_augmentor", False)
 
-            # Need to update the object file as well. Necessay for resampling
-            size = list(img_obj.GetSize())  # [X, Y, Z, C]
-            size[-1] = 0  # Collapse last dimension (channel)
-            index = [0] * len(size)
+    def _apply_multi_input_augmentor_if_needed(self, img_arr):
+        """Apply a sample-level augmentor to a single-image case if requested."""
+        if self._is_multi_input_augmentor(self.transform):
+            return self.transform([img_arr])[0]
+        return img_arr
 
-            img_obj = sitk.Extract(img_obj, size=size, index=index)
-            
-        # Resample 
+    @staticmethod
+    def _is_mask_type(input_type) -> bool:
+        return str(input_type).lower() in _MASK_TYPE_NAMES
+
+    @staticmethod
+    def _normalize_mask_mode(mask_mode):
+        if mask_mode is None:
+            return "label"
+        mode = str(mask_mode).lower()
+        if mode in _LABEL_MASK_MODES:
+            return "label"
+        if mode in _BINARY_MASK_MODES:
+            return "binary"
+        raise ValueError(
+            f"Unsupported mask_input_mode={mask_mode!r}. Use 'label'/'preserve' or 'binary'."
+        )
+
+    @staticmethod
+    def _as_list_for_inputs(value, n_inputs, default=None, name="value"):
+        """Expand scalar/None/list configuration to length n_inputs."""
+        if value is None:
+            return [default] * n_inputs
+        if isinstance(value, list):
+            if len(value) != n_inputs:
+                raise ValueError(f"{name} has length {len(value)}, expected {n_inputs}.")
+            return value
+        return [value] * n_inputs
+
+    @staticmethod
+    def _pad_z(volume, target_depth, pad_value):
+        current_depth = volume.shape[0]
+        if current_depth >= target_depth:
+            return volume
+        pad_total = target_depth - current_depth
+        pad_before = pad_total // 2
+        pad_after = pad_total - pad_before
+        return np.pad(
+            volume,
+            ((pad_before, pad_after), (0, 0), (0, 0)),
+            mode="constant",
+            constant_values=pad_value,
+        )
+
+    def _resample_if_needed(self, img_obj, is_mask_input=False):
+        """Resample SimpleITK image and return object, array, and spacing used."""
+        resample_sitk_order = None
         if self.resample:
-            # User gave resample as (D, H, W). Reverse it for SimpleITK (W, H, D)
+            # User gave resample as (D, H, W). Reverse it for SimpleITK (W, H, D).
             resample_sitk_order = list(reversed(self.resample))
 
-            # If sampling is None, then set to original spacing
-            if resample_sitk_order[0] is None: resample_sitk_order[0] = img_obj.GetSpacing()[0]
-            if resample_sitk_order[1] is None: resample_sitk_order[1] = img_obj.GetSpacing()[1]
-            if resample_sitk_order[2] is None: resample_sitk_order[2] = img_obj.GetSpacing()[2]
+            if resample_sitk_order[0] is None:
+                resample_sitk_order[0] = img_obj.GetSpacing()[0]
+            if resample_sitk_order[1] is None:
+                resample_sitk_order[1] = img_obj.GetSpacing()[1]
+            if resample_sitk_order[2] is None:
+                resample_sitk_order[2] = img_obj.GetSpacing()[2]
 
-            img_obj, img_arr = Utils3D.resample(img_obj, new_spacing=resample_sitk_order)
-            if self.verbose: print("Resampled image shape in (D,H,W):", img_arr.shape)        
-            
-        # Zero-padding along Z-axis if n_zSlices is specified
-        if self.n_zSlices:
-            current_depth = img_arr.shape[0]
-            if current_depth < self.n_zSlices:
-                pad_total = self.n_zSlices - current_depth
-                pad_before = pad_total // 2
-                pad_after = pad_total - pad_before
-                img_arr = np.pad(img_arr, 
-                                ((pad_before, pad_after), (0, 0), (0, 0)), 
-                                mode='constant', constant_values=self.zSlices_pad_value)
-                if self.verbose:
-                    print(f"Padded along Z-axis from {current_depth} to {img_arr.shape[0]} slices")            
+            interpolator = sitk.sitkNearestNeighbor if is_mask_input else sitk.sitkLinear
+            img_obj, img_arr = Utils3D.resample(
+                img_obj,
+                new_spacing=resample_sitk_order,
+                interpolator=interpolator,
+            )
+        else:
+            img_arr = sitk.GetArrayFromImage(img_obj)
 
-        # Clip intensity
-        if self.clip:
-            img_arr = Utils3D.clip_intensity(img_arr, self.clip)
-        elif self.clip_percentile:
-            lower_p = np.percentile(img_arr, self.clip_percentile[0])
-            upper_p = np.percentile(img_arr, self.clip_percentile[1])
-            img_arr = np.clip(img_arr, lower_p, upper_p)
+        return img_obj, img_arr, resample_sitk_order
 
+    def _resize_if_needed(self, img_arr, metadata, is_mask_input=False):
+        if not self.resize:
+            return img_arr
+
+        if self.resize_method == "interpolation":
+            resize_order = 0 if is_mask_input else 1
+            img_arr, _ = Utils3D.resize(
+                img_arr,
+                desired_width=self.resize[2],
+                desired_height=self.resize[1],
+                desired_depth=self.resize[0],
+                order=resize_order,
+                original_spacing=metadata["Spacing"],
+            )
+        elif self.resize_method == "center_crop":
+            pad_value = 0 if is_mask_input else self.resize_pad_value
+            img_arr = Utils3D.resize_with_center_crop(
+                img_arr,
+                desired_width=self.resize[2],
+                desired_height=self.resize[1],
+                desired_depth=self.resize[0],
+                pad_value=pad_value,
+            )
+        else:
+            raise ValueError("Unsupported keyword for resize. Supported are: interpolation and center_crop.")
+
+        return img_arr
+
+    def _read_primary_volume(self, img_path):
+        img_obj, img_arr, metadata = Utils3D.read_nifti(img_path)
+
+        if self.verbose:
+            print(
+                f"Original image shape in (D,H,W): {img_arr.shape}\n"
+                f"Original spacing in (Sx,Sy,Sz) or (W,H,D): {metadata['Spacing']}"
+            )
+
+        # Convert ChxDxHxW to DxHxW in rare cases.
+        if img_arr.ndim == 4:
+            img_arr = img_arr[0]
             if self.verbose:
-                print("Percentile values:", lower_p, upper_p)        
-                
-        # Normalize intensity
-        if self.normalize:
-            img_arr = Utils3D.normalize(img_arr)
+                print(
+                    f"Original image is 4D. Taking first channel; new shape is {img_arr.shape}."
+                )
 
-        # Apply binary mask (after resampling)
-        if binary_mask:
+            size = list(img_obj.GetSize())  # [X, Y, Z, C]
+            size[-1] = 0
+            index = [0] * len(size)
+            img_obj = sitk.Extract(img_obj, size=size, index=index)
+
+        return img_obj, img_arr, metadata
+
+    def _load_single_image(
+        self,
+        img_path,
+        binary_mask=None,
+        mask_path=None,
+        transform=None,
+        input_type="image",
+        mask_input_mode=None,
+        mask_keep_values=None,
+    ):
+        """Load/preprocess one input and return (tensor CxDxHxW, name_str)."""
+        img_name = os.path.basename(img_path)
+        is_mask_input = self.preserve_mask_labels and self._is_mask_type(input_type)
+        mask_mode = self._normalize_mask_mode(mask_input_mode) if is_mask_input else None
+
+        img_obj, img_arr, metadata = self._read_primary_volume(img_path)
+
+        # Resample primary volume. Masks use nearest-neighbor; images use linear.
+        img_obj, img_arr, resample_sitk_order = self._resample_if_needed(
+            img_obj,
+            is_mask_input=is_mask_input,
+        )
+        if self.verbose:
+            print("Resampled image shape in (D,H,W):", img_arr.shape)
+
+        # Z-padding. Masks always pad with background 0.
+        if self.n_zSlices:
+            before = img_arr.shape[0]
+            pad_value = 0 if is_mask_input else self.zSlices_pad_value
+            img_arr = self._pad_z(img_arr, self.n_zSlices, pad_value)
+            if self.verbose and img_arr.shape[0] != before:
+                print(f"Padded along Z-axis from {before} to {img_arr.shape[0]} slices")
+
+        # For mask inputs, optionally convert selected labels to binary.
+        # If mask_keep_values is omitted, binary_mask is accepted as a fallback.
+        if is_mask_input:
+            if mask_mode == "binary":
+                keep_values = mask_keep_values if mask_keep_values is not None else binary_mask
+                if keep_values is None:
+                    raise ValueError(
+                        f"Mask input {img_name} requested mask_input_mode='binary' but no "
+                        "mask_keep_values or binary_mask keep-values were provided."
+                    )
+                img_arr = Utils3D.binary_mask(img_arr, keep_values=keep_values).astype(np.int16)
+            else:
+                # Preserve labels such as 0/1/2.
+                img_arr = np.rint(img_arr).astype(np.int16)
+        else:
+            # Image-only intensity preprocessing.
+            if self.clip:
+                img_arr = Utils3D.clip_intensity(img_arr, self.clip)
+            elif self.clip_percentile:
+                lower_p = np.percentile(img_arr, self.clip_percentile[0])
+                upper_p = np.percentile(img_arr, self.clip_percentile[1])
+                img_arr = np.clip(img_arr, lower_p, upper_p)
+                if self.verbose:
+                    print("Percentile values:", lower_p, upper_p)
+
+            if self.normalize:
+                img_arr = Utils3D.normalize(img_arr)
+
+        # Apply ROI mask to image-like branches only. For mask inputs, binary_mask is
+        # treated as keep-values only when mask_input_mode='binary'; it is not used
+        # as an ROI multiplier.
+        if (not is_mask_input) and binary_mask:
             assert isinstance(binary_mask, (list, tuple)), "binary_mask should be a list or tuple."
+            if mask_path is None:
+                raise ValueError(f"binary_mask was provided for {img_name}, but mask_path is None.")
 
             label_obj, label_arr, label_meta = Utils3D.read_nifti(mask_path)
 
-            # Resample segmentation to match image spacing
+            # Resample segmentation with nearest-neighbor to match image spacing.
             if self.resample:
-                label_obj, label_arr = Utils3D.resample(label_obj, new_spacing=resample_sitk_order)
+                label_obj, label_arr = Utils3D.resample(
+                    label_obj,
+                    new_spacing=resample_sitk_order,
+                    interpolator=sitk.sitkNearestNeighbor,
+                )
 
-            # Pad label along Z-axis to match image, if n_zSlices is specified
+            # Pad label along Z-axis to match image.
             if self.n_zSlices:
-                label_depth = label_arr.shape[0]
-                if label_depth < self.n_zSlices:
-                    pad_total = self.n_zSlices - label_depth
-                    pad_before = pad_total // 2
-                    pad_after = pad_total - pad_before
-                    label_arr = np.pad(
-                        label_arr,
-                        ((pad_before, pad_after), (0, 0), (0, 0)),
-                        mode='constant', constant_values=0)
-                if self.verbose:
-                    print(f"Padded label along Z-axis from {label_depth} to {label_arr.shape[0]} slices")
+                before = label_arr.shape[0]
+                label_arr = self._pad_z(label_arr, self.n_zSlices, pad_value=0)
+                if self.verbose and label_arr.shape[0] != before:
+                    print(f"Padded label along Z-axis from {before} to {label_arr.shape[0]} slices")
 
-            assert label_arr.shape == img_arr.shape, f"Segmentation and image shape mismatch for {img_name}: {label_arr.shape} vs {img_arr.shape}"
+            label_arr = np.rint(label_arr).astype(np.int16)
+            if label_arr.shape != img_arr.shape:
+                raise ValueError(
+                    f"Segmentation and image shape mismatch for {img_name}: "
+                    f"{label_arr.shape} vs {img_arr.shape}"
+                )
 
-            mask = Utils3D.binary_mask(label_arr, keep_values=binary_mask).astype(img_arr.dtype)
+            roi_mask = Utils3D.binary_mask(label_arr, keep_values=binary_mask).astype(img_arr.dtype)
+            img_arr = img_arr * roi_mask
 
-            img_arr = img_arr * mask  # apply mask to extract ROI                
+        # Resize after intensity preprocessing/ROI masking. Mask inputs use nearest.
+        img_arr = self._resize_if_needed(img_arr, metadata, is_mask_input=is_mask_input)
+        if self.verbose and self.resize:
+            print("Resized image shape in (D,H,W):", img_arr.shape)
 
-        # Resize volume to standard shape
-        if self.resize:    
-            if self.resize_method == "interpolation":      
-                img_arr, _ = Utils3D.resize(img_arr, 
-                                    desired_width=self.resize[2],
-                                    desired_height=self.resize[1],
-                                    desired_depth=self.resize[0],
-                                    order=1,
-                                    original_spacing=metadata["Spacing"])
-            elif self.resize_method == "center_crop":
-                img_arr = Utils3D.resize_with_center_crop(img_arr,
-                                                          desired_width=self.resize[2],
-                                                          desired_height=self.resize[1],
-                                                          desired_depth=self.resize[0],
-                                                          pad_value=self.resize_pad_value)
-            else:
-                raise ValueError("Unsupported keyword for resize. Supported are - interpolation and center_crop.")
+        # Final safety for mask inputs: restore exact integer-like labels after
+        # nearest-neighbor resize/crop.
+        if is_mask_input:
+            img_arr = np.rint(img_arr).astype(np.float32)
+        else:
+            img_arr = img_arr.astype(np.float32, copy=False)
 
-            if self.verbose: print("Resized image shape in (D,H,W):", img_arr.shape)
-            
-        # Transforms (e.g., random flips, crops)
+        # Per-input transforms. Legacy channel-first wrappers may return C,D,H,W.
+        transform_returns_channel_first = False
         if transform is not None:
-            img_arr = transform(img_arr)       
-         
-        # Convert to torch tensor if it is a numpy array
-        if isinstance(img_arr, np.ndarray): img_arr = torch.from_numpy(img_arr)
-            
-        # Convert MetaTensor -> plain tensor if needed
-        if hasattr(img_arr, "as_tensor"): img_arr = img_arr.as_tensor()
+            transform_returns_channel_first = bool(getattr(transform, "returns_channel_first", False))
+            img_arr = transform(img_arr)
 
-        # Add channel dimension
-        img_arr = img_arr.unsqueeze(0).float() # C x D x H x W
-        
-        return img_arr, img_name
-        
-    def __getitem__(self, idx):
+        if isinstance(img_arr, np.ndarray):
+            img_arr = torch.from_numpy(img_arr)
+        if hasattr(img_arr, "as_tensor"):
+            img_arr = img_arr.as_tensor()
 
-        row = self.df.iloc[idx] # current row
-        
-        # Get label
+        # Standardize to C x D x H x W.
+        if img_arr.ndim == 3:
+            img_arr = img_arr.unsqueeze(0)
+        elif img_arr.ndim == 4:
+            if not transform_returns_channel_first and self.verbose:
+                print(
+                    "[WARN] Received a 4D tensor from transform without "
+                    "returns_channel_first=True; assuming C,D,H,W."
+                )
+        else:
+            raise ValueError(
+                f"Expected 3D or 4D image tensor after preprocessing, got shape {tuple(img_arr.shape)}"
+            )
+
+        return img_arr.float(), img_name
+
+    def _get_label(self, row):
         if self.classification_type == "multilabel":
             label = row[self.label_column].values.astype(np.float32)
-            label = torch.from_numpy(label)
+            return torch.from_numpy(label)
+
+        if isinstance(self.label_column, list):
+            label = row[self.label_column[0]]
         else:
-            # Handle if label column is provided in a list
-            if isinstance(self.label_column, list):
-                label = row[self.label_column[0]] # column name provided in list
+            label = row[self.label_column]
+
+        if self.classification_type == "binary":
+            label = torch.tensor(label).float()
+            if self.onehot:
+                label = torch.tensor([1.0, 0.0]) if label.item() == 0 else torch.tensor([0.0, 1.0])
+        elif self.classification_type == "multiclass":
+            label = torch.tensor(label).long()
+            if self.onehot:
+                num_classes = len(set(self.df[self.label_column]))
+                onehot_vec = torch.zeros(num_classes)
+                onehot_vec[label] = 1.0
+                label = onehot_vec
+        else:
+            raise ValueError(f"Unsupported classification_type={self.classification_type}")
+
+        return label
+
+    def __getitem__(self, idx):
+        row = self.df.iloc[idx]
+        label = self._get_label(row)
+
+        # Single-image path.
+        if isinstance(self.dir_column, str) or (isinstance(self.dir_column, list) and len(self.dir_column) == 1):
+            if isinstance(self.dir_column, str):
+                dir_col = self.dir_column
+                binary_mask = self.binary_mask if isinstance(self.binary_mask, (list, tuple)) else None
+                mask_col = self.mask_column if isinstance(self.mask_column, str) else None
+                input_type = self.input_types[0] if isinstance(self.input_types, list) else (self.input_types or "image")
+                mask_input_mode = self.mask_input_modes[0] if isinstance(self.mask_input_modes, list) else self.mask_input_modes
+                mask_keep_values = self.mask_keep_values[0] if isinstance(self.mask_keep_values, list) else self.mask_keep_values
             else:
-                label = row[self.label_column] # column name provided in string
+                dir_col = self.dir_column[0]
+                binary_mask = self.binary_mask[0] if isinstance(self.binary_mask, list) else self.binary_mask
+                mask_col = self.mask_column[0] if isinstance(self.mask_column, list) else self.mask_column
+                input_type = self.input_types[0] if isinstance(self.input_types, list) else (self.input_types or "image")
+                mask_input_mode = self.mask_input_modes[0] if isinstance(self.mask_input_modes, list) else self.mask_input_modes
+                mask_keep_values = self.mask_keep_values[0] if isinstance(self.mask_keep_values, list) else self.mask_keep_values
 
-            if self.classification_type == "binary":
-                label = torch.tensor(label).float()
-                if self.onehot:
-                    label = torch.tensor([1.0, 0.0]) if label.item() == 0 else torch.tensor([0.0, 1.0])
-
-            elif self.classification_type == "multiclass":
-                label = torch.tensor(label).long()
-                if self.onehot:
-                    num_classes = len(set(self.df[self.label_column]))
-                    onehot_vec = torch.zeros(num_classes)
-                    onehot_vec[label] = 1.0
-                    label = onehot_vec        
-        
-        # If dir_column is a string, then the dataloader acts as single-image loader. No need to iterate.
-        if isinstance(self.dir_column, str): # single-image loader
-            if self.verbose: print("dir_column is probided as string. So, loading as a single-image loader.")
-            
-            img_path = row[self.dir_column]
-
-            # Prevent row[None], because it is invalid
-            mask_path = None
-            if isinstance(self.mask_column, str):
-                mask_path = row[self.mask_column]
-            
-            # Make sure transform is not a list, if not None.
-            if isinstance(self.transform, list): 
-                self.transform = self.transform[0]
-
-            img_arr, img_name = self._load_single_image(img_path=img_path, 
-                                                   binary_mask=self.binary_mask if isinstance(self.binary_mask, (list, tuple)) else None, 
-                                                   mask_path=mask_path,
-                                                   transform=self.transform)
-            
-            return img_arr, label, img_name
-        
-        # If dir_column is a list, but length is i, then still the dataloader acts as single-image loader. 
-        elif isinstance(self.dir_column, list) and len(self.dir_column) == 1: # still single-image loader
-            if self.verbose: print("dir_column is probided as a list, but length is 1. So, loading as a single-image loader.")
-            
-            img_path = row[self.dir_column[0]]
-
-            # Prevent row[None], because it is invalid
-            mask_path = None
-            if isinstance(self.mask_column, list):
-                if self.mask_column[0] is not None: 
-                    mask_path = row[self.mask_column[0]]
-            elif isinstance(self.mask_column, str):
-                mask_path = row[self.mask_column]
-
-            # Make sure transform is not a list, if not None.
-            if isinstance(self.transform, list): 
-                self.transform = self.transform[0]
+            img_path = row[dir_col]
+            mask_path = row[mask_col] if isinstance(mask_col, str) else None
+            use_shared_augmentor = self._is_multi_input_augmentor(self.transform)
 
             img_arr, img_name = self._load_single_image(
-                                                img_path=img_path,
-                                                binary_mask=self.binary_mask if isinstance(self.binary_mask, (list, tuple)) else None,
-                                                mask_path=mask_path,
-                                                transform=self.transform)
-                                            
-            return img_arr, label, img_name
-        
-        else: # assuming multi-image dataloader
-            if self.verbose: print("Loading as a multi-image loader.")
-            
-            # If binary_mask, mask_column, and transfrom are None, then repeat them to the length of dir_column
-            if self.binary_mask is None: self.binary_mask = [None] * len(self.dir_column)
-            if self.mask_column is None: self.mask_column = [None] * len(self.dir_column)
-            
-            # Do the same for transform, but it could be - None, True, False
-            if self.transform is None or isinstance(self.transform, bool): self.transform = [self.transform] * len(self.dir_column)
-            
-            # Now, check if they all have the same length
-            assert len(self.dir_column) == len(self.binary_mask), \
-                f"Length of dir_column ({len(self.dir_column)}) and  binary_mask ({len(self.binary_mask)}) " \
-                "in the config file should be the same for multi-image loader."
-            
-            assert len(self.binary_mask) == len(self.mask_column), \
-                f"Length of binary_mask ({len(self.binary_mask)}) and mask_column ({len(self.mask_column)}) " \
-                "in the config file should be the same for multi-image loader."    
-                
-            assert len(self.dir_column) == len(self.transform), \
-                f"Length of dir_column ({len(self.dir_column)}) and  transform ({len(self.transform)}) " \
-                "in the config file should be the same for multi-image loader."
-            
-            # Iterate over images
-            img_arrs, img_names = [], []
-            for dir_col, bin_mask, mask_col, transform in zip(self.dir_column, self.binary_mask, self.mask_column, self.transform):
-                img_path = row[dir_col]
-                
-                # Prevent row[None], because it is invalid.
-                mask_path = None
-                if isinstance(mask_col, str):
-                    mask_path = row[mask_col]
-                              
-                img_arr, img_name = self._load_single_image(img_path=img_path, 
-                                                       binary_mask=bin_mask, 
-                                                       mask_path=mask_path,
-                                                       transform=transform)
-                
-                img_arrs.append(img_arr)
-                img_names.append(img_name)
-                
-            return img_arrs, label, img_names
-            
-        
-#%%
-if __name__ == "__main__":
-
-    from torch.utils.data import DataLoader
-    from transforms_v2 import Compose3D, Transform3D
-    from transforms_v2 import monai_pipeline
-    
-    import pandas as pd
-
-    "Uncomment for multi-label classification"
-    # df = pd.read_excel('/research/m324371/Project/Digital_Twin/Classification/Dataframes/Dataset_791v2.xlsx') 
-    # label_cols = ['Kidney cysts', 'Liver cysts', 'Diverticular disease']
-
-    # # Transforms
-    # transform_pipeline = Compose3D([
-    #     (Transform3D.flip, {'axis': 'random'}, 0.5),  # 50% chance random flip
-    #     (Transform3D.rotate, {'angle': 10, 'axes': (1, 2)}, 1.0),  # Always rotate 10 degrees along (1, 2)
-    #     (Transform3D.center_crop, {'crop_size': (48, 96, 96), 'restore_shape': False, 'padding': False, 'interpolation_order':1}, 1.0)  # Always center crop
-    # ])
-
-    # dataset = ClsDataset(dataframe=df,
-    #                     classification_type="multilabel",
-    #                     dir_column="Directories",
-    #                     label_column=label_cols,
-    #                     onehot=False,
-    #                     resample=(5.0,None,None), # (Sz,Sy,Sx) or (Sd,Sh,Sw)
-    #                     n_zSlices=176,
-    #                     zSlices_pad_value=500,
-    #                     clip=(-1000,400),
-    #                     normalize=True,
-    #                     resize=(64, 128, 128), # (D,H,W)
-    #                     transform=transform_pipeline, # None
-    #                     verbose=True,
-    #                     )
-
-    # loader = DataLoader(dataset, batch_size=1, shuffle=False)
-
-    # # Example usage
-    # for images, labels, image_names in loader:
-    #     print(f"Image shape in (B,C,D,H,W): {images.shape}")  # [B, 1, D, H, W]
-    #     print(labels.shape)  # [B, num_classes]
-    #     print(labels)
-    #     print(image_names)
-
-    #     # Extract first image and convert to numpy
-    #     volume = images[0, 0].cpu().numpy()  
-        
-    #     # Pass the extracted volume
-    #     Utils3D.visualizer(volume, spacing=(1, 1, 1), cmap='gray', opacity="sigmoid")
-    #     break
-
-    "Uncomment for multi-class classification"
-    df = pd.read_excel('/research/m324371/Project/Digital_Twin/Classification/Dataframes/AccRejRew_train_v2.xlsx') 
-
-    # Transforms based on numpy and SciPy
-    transform_pipeline = Compose3D([
-        (Transform3D.flip, {'axis': 'random'}, 0.5),  # 50% chance random flip
-        (Transform3D.rotate, {'angle': 10, 'axes': (1, 2)}, 1.0),  # Always rotate 10 degrees along (1, 2)
-        (Transform3D.center_crop, {'crop_size': (48, 96, 96), 'restore_shape': False, 'padding': False, 'interpolation_order':1}, 1.0)  # Always center crop
-    ])
-    
-    # Transform based on MONAI
-    transform_dict = {
-                    "RandFlip": {"spatial_axis": 0, "prob": 0.5},
-                    "RandRotate": {"range_x": 0.52, "range_y": 0.52, "range_z": 0.52,
-                                   "keep_size": True, "mode": "nearest", "prob": 0.5,}
-                }
-    monai_transform_pipeline = monai_pipeline(transform_dict)
-
-    # Dataloader
-    dataset = ClsDataset(dataframe=df,
-                         dir_column=["Directories", "Directories"], # "Directories", 
-                         label_column="Labels",
-                         classification_type="multiclass",
-                         binary_mask= [[1,2], None], # [1,2],
-                         mask_column=["Seg_dirs", None],
-                         onehot=True,
-                         resample=(2.0, None, None), # (Sz,Sy,Sx) or (Sd,Sh,Sw)
-                         n_zSlices=None, # 176,
-                         zSlices_pad_value=None, # 500,
-                         clip=None, # (-1000,400),
-                         clip_percentile=(0.5, 99),
-                         normalize=None, # True,
-                         resize=(128, 256, 256), # (D,H,W)
-                         resize_method="center_crop",
-                         resize_pad_value=-1, 
-                         transform=[None, monai_transform_pipeline], # None # transform_pipeline
-                         verbose=True,
-                        )
-
-    loader = DataLoader(dataset, batch_size=1, shuffle=False)
-
-    # Example usage
-    for images, labels, image_names in loader:
-                
-        print(labels.shape)  # [B, num_classes]
-        print(labels)
-        print(image_names) # dataloader will make it ("xyz",) as it performs batching.
-        
-        # # If it is a single-image loader: convert Tensor to list([Tensor]), so that we iterate
-        # over both single-image and multi-image loader. 
-        if isinstance(images, torch.Tensor): images = [images]
-
-        for i, image in enumerate(images):
-            print(f"Image shape in (B,C,D,H,W): {image.shape}")  # [B, 1, D, H, W]
-            
-            # Extract first image and convert to numpy
-            volume = image[0, 0].cpu().numpy()  
-    
-            out_dir = "/research/m324371/Project/Digital_Twin/Classification/eGFR_prediction_resources/"
-            out_name = os.path.splitext(image_names[i][0])[0] + f"_dloaderOut_{i}.nii.gz"
-            out_path = os.path.join(out_dir, out_name)
-            
-            # Set some reasonable spacing (for visualization, this is fine)
-            Utils3D.write_nifti(
-                output_file=out_path,
-                img_arr=volume,
-                spacing=(1.0, 1.0, 1.0),
-                origin=(0.0, 0.0, 0.0),
-                direction=(1.0, 0.0, 0.0,
-                           0.0, 1.0, 0.0,
-                           0.0, 0.0, 1.0)
+                img_path=img_path,
+                binary_mask=binary_mask,
+                mask_path=mask_path,
+                transform=None if use_shared_augmentor else self.transform,
+                input_type=input_type,
+                mask_input_mode=mask_input_mode,
+                mask_keep_values=mask_keep_values,
             )
-    
-            
-            # # Pass the extracted volume
-            # Utils3D.visualizer(volume, spacing=(1, 1, 1), cmap='gray', opacity="sigmoid")
+            img_arr = self._apply_multi_input_augmentor_if_needed(img_arr)
+            return img_arr, label, img_name
 
-        break            
-        
-        
+        # Multi-image path.
+        n_inputs = len(self.dir_column)
+        binary_mask = self._as_list_for_inputs(self.binary_mask, n_inputs, default=None, name="binary_mask")
+        mask_column = self._as_list_for_inputs(self.mask_column, n_inputs, default=None, name="mask_column")
+        input_types = self._as_list_for_inputs(self.input_types, n_inputs, default="image", name="input_types")
+        mask_input_modes = self._as_list_for_inputs(self.mask_input_modes, n_inputs, default=None, name="mask_input_modes")
+        mask_keep_values = self._as_list_for_inputs(self.mask_keep_values, n_inputs, default=None, name="mask_keep_values")
 
-    
+        use_shared_augmentor = self._is_multi_input_augmentor(self.transform)
+        if use_shared_augmentor:
+            transforms = [None] * n_inputs
+        elif self.transform is None or isinstance(self.transform, bool):
+            transforms = [self.transform] * n_inputs
+        else:
+            transforms = self.transform
+
+        if len(transforms) != n_inputs:
+            raise ValueError(
+                f"Length of transform ({len(transforms)}) must match dir_column ({n_inputs})."
+            )
+
+        img_arrs, img_names = [], []
+        for i, (dir_col, bin_mask, mask_col, transform, input_type, mask_mode, keep_values) in enumerate(
+            zip(self.dir_column, binary_mask, mask_column, transforms, input_types, mask_input_modes, mask_keep_values)
+        ):
+            img_path = row[dir_col]
+            mask_path = row[mask_col] if isinstance(mask_col, str) else None
+
+            img_arr, img_name = self._load_single_image(
+                img_path=img_path,
+                binary_mask=bin_mask,
+                mask_path=mask_path,
+                transform=None if use_shared_augmentor else transform,
+                input_type=input_type,
+                mask_input_mode=mask_mode,
+                mask_keep_values=keep_values,
+            )
+            img_arrs.append(img_arr)
+            img_names.append(img_name)
+
+        if use_shared_augmentor:
+            img_arrs = self.transform(img_arrs)
+
+        return img_arrs, label, img_names

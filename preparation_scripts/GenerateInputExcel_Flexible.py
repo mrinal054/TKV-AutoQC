@@ -155,6 +155,6 @@ for split in ["train", "val", "test"]:
     df_proc = df_proc[cols]
 
     # Save using the existing naming convention so downstream scripts remain compatible.
-    out_name = f"AccRejRew_{PROBLEM_MODE}_{INPUT_MODE}_Abby_{split}_v4-3.xlsx"
+    out_name = f"AccRejRew_{PROBLEM_MODE}_{INPUT_MODE}_{split}_v4-3.xlsx"
     df_proc.to_excel(os.path.join(OUTPUT_DIR, out_name), index=False)
     print(f"Saved {out_name} - total rows: {len(df_proc)}")

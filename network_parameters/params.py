@@ -32,13 +32,13 @@ def model_params(name, config=None):
         param["freeze_latents"] = config.model.freeze_latents
         param["dropout"] = config.model.dropout
         param["load_ckpt"] = config.model.load_ckpt        
-    elif name == "VGG16Classifier": # added by Abby
+    elif name == "VGG16Classifier": 
         param["n_classes"] = config.train.n_classes
         param["in_channels"] = config.model.in_channels
         param["out_channels"] = config.model.out_channels or []
         param["dropout"] = config.model.dropout if config.model.dropout is not None else 0.0
         param["device"] = config.train.device
-    elif name == "ViTClassifier": # added by Abby
+    elif name == "ViTClassifier": 
         param["n_classes"] = config.train.n_classes
         param["in_channels"] = config.model.in_channels
         param["dropout"] = config.model.dropout if config.model.dropout is not None else 0.0
@@ -50,7 +50,7 @@ def model_params(name, config=None):
         param["num_heads"] = config.model.num_heads
         param["pos_embed_type"] = config.model.pos_embed_type
         param["spatial_dims"] = getattr(config.model, "spatial_dims", 3)
-    elif name == "SwinUNETRClassifier":  # added by Abby
+    elif name == "SwinUNETRClassifier":  
         param["n_classes"] = config.train.n_classes
         param["in_channels"] = config.model.in_channels
         param["dropout"] = config.model.dropout if config.model.dropout is not None else 0.0
@@ -58,7 +58,7 @@ def model_params(name, config=None):
         param["feature_size"] = getattr(config.model, "feature_size", 48)
         param["use_checkpoint"] = getattr(config.model, "use_checkpoint", False)
         param["spatial_dims"] = getattr(config.model, "spatial_dims", 3)
-    elif name == "EfficientNetClassifier":  # added by Abby
+    elif name == "EfficientNetClassifier":  
         param["n_classes"] = config.train.n_classes
         param["in_channels"] = config.model.in_channels
         param["dropout"] = config.model.dropout if config.model.dropout is not None else 0.0
@@ -66,15 +66,6 @@ def model_params(name, config=None):
         param["dropout"] = config.model.dropout if config.model.dropout is not None else 0.0
         param["spatial_dims"] = getattr(config.model, "spatial_dims", 3)
         param["pretrained_path"] = getattr(config.model, "pretrained_path", None)  # path to .pth weights
-    elif name == "MedicalNetResNet18Classifier":  # added by Abby
-        param["n_classes"] = config.train.n_classes
-        param["in_channels"] = config.model.in_channels
-        param["out_channels"] = config.model.out_channels or []
-        param["dropout"] = config.model.dropout if config.model.dropout is not None else 0.0
-        param["device"] = config.train.device
-        param["pretrained_path"] = getattr(config.model, "pretrained_path", None)  # path to .pth weights
-        param["input_shape"] = getattr(config.model, "input_shape", (64, 128, 128))  # your MRI volumes
-        param["freeze_backbone"] = getattr(config.model, "freeze_backbone", None)    
     elif name == "MultiImageNet":
         param["config_path"] = config.model.config_path
         param["n_classes"] = config.train.n_classes

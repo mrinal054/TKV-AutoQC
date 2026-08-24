@@ -46,7 +46,7 @@
 
 ---
 
-## [loaderv5](https://gitlab.mayo.edu/kline-lab/dtcls_repo/-/blob/main/dataloader/loaderv5.py?ref_type=heads) — Multi-image loading with per-image transforms and masks
+## [loaderv5](../dataloader/loaderv5.py) — Multi-image loading with per-image transforms and masks
 
 - Extends v4 to **multi-image inputs** per sample (e.g., image + mask-ROI image + another modality).
 - `dir_column` can now be:

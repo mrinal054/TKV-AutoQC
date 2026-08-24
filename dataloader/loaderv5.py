@@ -13,9 +13,7 @@ Key additions over the original loaderv5.py:
 """
 
 import sys
-sys.path.append("/research/m324371/Project/Digital_Twin/Classification/utils/")
-
-from utils import Utils3D
+from utils.utils import Utils3D
 from typing import Union, List
 import os
 import torch

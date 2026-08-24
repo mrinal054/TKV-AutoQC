@@ -2,8 +2,6 @@
 MONAI ResNet implementation:
     https://docs.monai.io/en/0.9.1/_modules/monai/networks/nets/resnet.html
 """
-import sys
-sys.path.append("/research/m324371/Project/Digital_Twin/Classification/utils/")
 
 import torch
 import torch.nn as nn

@@ -71,11 +71,11 @@ TKV AutoQC provides tools to create stratified dataset splits and generate the i
 
 Steps:
 1. Place MRI volumes `*_0000.nii.gz` and corresponding segmentation masks `*.nii.gz` in unified directories. Scripts assume images are in Accept/Reject/Rework subdirectories and masks are in a single flat directory.
-2. Filter dataset to check for images with labels touching the edge in any direction. This script will generate per-class information sheets with mask coverage data.
+2. Run the mask-coverage check to record first/last-slice label presence and image-boundary contact. These findings are retained as QC metadata and do not automatically exclude a case.
     - `CheckMask_FirstLastSlices_and_EdgeLabels.py`
-3. Generate summary of cleaned dataset information and a clean file tracking sheet for data curation.
+3. Generate the coverage summary and tracking workbook. The `Clean_Files` and `LabelOrTouch_Files` sheets are descriptive QC categories rather than automatic inclusion/exclusion lists.
     - `GenerateSimplifiedCoverageSummary.py`
-4. Run dataset curation script, with options to create a balanced train/val/test split or a balanced val/test split with the remaining images placed in the train dataset. It will output train/val/test file tracking logs.
+4. Run the curation script to create patient-disjoint train/validation/test logs and copy the corresponding files. The recommended public default is `COVERAGE_FILTER_MODE = "none"`, which uses both tracking sheets. Optional modes can restrict all splits to `Clean_Files` or reproduce a historical test-only filtering policy. Multiple scans from the same patient may remain within one split, but no patient is allowed to occur across splits. Set `PATIENT_ID_COLUMN` to a deidentified patient identifier when available; otherwise, configure the filename-based patient grouping rule.
     - `CurateStandardizedExperimentSet.py`
     
     Resulting directory:
@@ -95,7 +95,7 @@ dataset/stratified_split_v*/
     └── Rework/
 
 ```
-3. Run Excel generation script to create the input files for the model. This script has tags to change the Excel format depending on which task the user wants to run (Acc/Rew vs Reject, Accept vs Rework, or multiclass). The output Excels meet the trainer input requirements outlined in the following section. 
+5. Run the Excel generation script to create the model-input workbooks. This script preserves the existing split assignments, verifies that the source logs remain patient-disjoint, and supports Acc/Rew vs Reject, Accept vs Rework, or multiclass output formats. The output Excel files meet the trainer input requirements outlined in the following section.
     - `GenerateInputExcel_Flexible.py`
 
 
@@ -206,7 +206,7 @@ train:
 
 ### Dataset Inputs, Outputs, and Execution Phase
 
-> **Note on split usage:** The dataset-preparation scripts can produce `train`, `val`, and `test` Excel logs. During training, the trainer reads `excel_train_dir` and creates internal fold-level train/validation splits from that sheet. `excel_test_dir` is used as the held-out evaluation sheet during `phase: test` or `phase: both`. The created 'val' Excel log can be used for 'excel_test_dir' during model development, and the created 'test' Excel log can be used for final evaluation.
+> **Note on split usage:** The dataset-preparation scripts produce patient-disjoint `train`, `val`, and `test` Excel logs. Multiple scans from one patient may occur within a single split, but the same patient must not occur across splits. During training, the trainer reads `excel_train_dir` and creates internal fold-level train/validation splits from that sheet. `excel_test_dir` is used as the held-out evaluation sheet during `phase: test` or `phase: both`. The created `val` Excel log can be used for model-development evaluation, and the created `test` Excel log should be reserved for final evaluation. If multiple scans per patient remain in `excel_train_dir`, internal cross-validation should also use patient-group-aware folds to avoid within-training-set patient leakage.
 
 Dataset routing, Excel input files, output directories, and pipeline phase are all YAML-controlled.
 No command-line arguments are required beyond specifying the config itself.
@@ -223,8 +223,8 @@ classification_type: multiclass # either binary, multiclass or multilabel
 directories:
   root: /path/to/TKV-AutoQC/
   excel_train_dir: /path/to/train.xlsx
-  excel_test_dir: /path/to/test.xlsx
-  result_dir: /path/to/results/
+  excel_test_dir: /path/to/val_or_test.xlsx
+  result_dir: /path/to/output_directory/
 ```
 - `phase`: controls whether to run training, testing, or both sequentially.
 - `base_model_name`: controls which trained model to use if running inference independently.

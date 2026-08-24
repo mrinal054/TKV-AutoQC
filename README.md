@@ -1,4 +1,3 @@
-[TKV_AutoQC_README.md](https://github.com/user-attachments/files/26754267/TKV_AutoQC_README.md)
 # TKV AutoQC
 Automated Quality Control System for Kidney MRI Segmentation and Volume Calculation
 
@@ -21,11 +20,10 @@ TKV AutoQC is a modular deep-learning pipeline for automated Accept / Reject / R
 - VGG16
 - ViT
 - Swin UNET-R
-- MedicalNet ResNet18
 - Multi-input architectures through **MultiImageNet** (referenced below)
 
 **Outputs include:**
-- Model prediction CSVs
+- Model prediction Excel workbooks
 - Confusion matrices
 - TensorBoard logs
 - Loss curves
@@ -38,12 +36,11 @@ dtcls_repo/
 │── config/                     # YAML configs for preprocessing and model training
 │── dataloader/                 # Dataloader scripts
 │── documents/                  # Pipeline documentation
-│── TKV_AutoQC_README.md        # Project documentation (this file)
+│── README.md                   # Project documentation
 │── losses/                     # Loss functions
 │── network_parameters/         # Network parameters for each model
 |── networks/                   # Model definitions (ResNetClassifier, DenseNet, ViT, etc.)
 │── utils/                      # Shared helper modules
-│── weights/                    # Pretrained weights for MedicalNet ResNet18
 │── preparation_scripts/        # Environment setup, dataset preparation, and additional visualization utilities
 ```
 
@@ -73,7 +70,7 @@ Steps:
 1. Place MRI volumes `*_0000.nii.gz` and corresponding segmentation masks `*.nii.gz` in unified directories. Scripts assume images are in Accept/Reject/Rework subdirectories and masks are in a single flat directory.
 2. Run the mask-coverage check to record first/last-slice label presence and image-boundary contact. These findings are retained as QC metadata and do not automatically exclude a case.
     - `CheckMask_FirstLastSlices_and_EdgeLabels.py`
-3. Generate the coverage summary and tracking workbook. The `Clean_Files` and `LabelOrTouch_Files` sheets are descriptive QC categories rather than automatic inclusion/exclusion lists.
+3. Generate the coverage summary and tracking workbook. The `Clean_Files` and `LabelOrTouch_Files` sheets are descriptive QC categories rather than automatic inclusion/exclusion lists. Missing or unreadable segmentations are written to `Invalid_Files` and are not eligible for curation.
     - `GenerateSimplifiedCoverageSummary.py`
 4. Run the curation script to create patient-disjoint train/validation/test logs and copy the corresponding files. The recommended public default is `COVERAGE_FILTER_MODE = "none"`, which uses both tracking sheets. Optional modes can restrict all splits to `Clean_Files` or reproduce a historical test-only filtering policy. Multiple scans from the same patient may remain within one split, but no patient is allowed to occur across splits. Set `PATIENT_ID_COLUMN` to a deidentified patient identifier when available; otherwise, configure the filename-based patient grouping rule.
     - `CurateStandardizedExperimentSet.py`
@@ -147,18 +144,17 @@ All preprocessing, model architecture, and training behavior is controlled via Y
 ### Model Configuration 
 ```
 model:
-  name: MedicalNetResNet18Classifier
-  subname: resnet18
-  suffix: DenseNet121_v1
+  name: MultiImageNet
+  subname: null
+  suffix: DenseNet121_cosine_warmup_augfix_BINMASK
   in_channels: 1
-  out_channels: [256, 128]
-  dropout: 0.0
-  pretrained_path: /path/to/weights.pth
-  freeze_backbone: true
-  unfreeze_epoch: 100
-  input_shape: [64, 128, 128]
+  out_channels: null
+  dropout: 0.25
+  pretrained_path: null
+  freeze_backbone: False
+  unfreeze_epoch: null
 
-  #MultiImageNet-specific parameters:
+  # MultiImageNet-specific parameters:
   dummy_size: [1, 1, 64, 128, 128]
   config_path: networks/config_multiImageNet.yaml
 ```
@@ -173,9 +169,9 @@ Feature dimensions are inferred automatically via a dummy forward pass.
 ```
 train:
   epochs: 300 
-  backbone_lr: 0.005
-  classifier_lr: 0.001
-  optimizer: adamw      
+  backbone_lr: 0.00015
+  classifier_lr: 0.00015
+  optimizer: adam
   scheduler:
     type: cosine_warmup 
     warmup_epochs: 25
@@ -183,13 +179,13 @@ train:
   weight_decay: 0.001
   save_weights_only: True
   save_best_model: True 
-  save_last_model: True
+  save_last_model: False  # Safe default until last checkpoints are stored separately
   one_hot: False
   period: 20
   early_stop: False
   patience: 25
-  batch_size: 16                
-  n_classes: 1
+  batch_size: 8
+  n_classes: 3
   kfold: 5
   kfold_seed: 42 # random seed used to generate k-fold
   run_folds: [0] 
@@ -201,12 +197,12 @@ train:
 - Optimizers, `adam`, `adamw`
 - Schedulers: ReduceLROnPlateau, cosine_warmup, cosine_warmup_v2 (no base LR)
 - `kfold`: number of folds used by `StratifiedKFold` during training. Use an integer `>= 2`.
-- `run_folds`: optional list of fold indices to train (for example `[0]` or `[0, 1]`). Set to `null` to run all folds.
+- `run_folds`: defaults to `[0]`, so only fold 0 is trained. Set to `null` to run all folds.
 - `retrain.resume_folds`: list of fold indices to resume when `resume_train: True`.
 
 ### Dataset Inputs, Outputs, and Execution Phase
 
-> **Note on split usage:** The dataset-preparation scripts produce patient-disjoint `train`, `val`, and `test` Excel logs. Multiple scans from one patient may occur within a single split, but the same patient must not occur across splits. During training, the trainer reads `excel_train_dir` and creates internal fold-level train/validation splits from that sheet. `excel_test_dir` is used as the held-out evaluation sheet during `phase: test` or `phase: both`. The created `val` Excel log can be used for model-development evaluation, and the created `test` Excel log should be reserved for final evaluation. If multiple scans per patient remain in `excel_train_dir`, internal cross-validation should also use patient-group-aware folds to avoid within-training-set patient leakage.
+> **Note on split usage:** The dataset-preparation scripts produce patient-disjoint `train`, `val`, and `test` Excel logs. Multiple scans from one patient may occur within a single split, but the same patient must not occur across splits. The default public configuration trains only fold 0 (`run_folds: [0]`), matching the demonstrated experiments. After training, run `phase: test` with the generated validation workbook for development evaluation, then point `excel_test_dir` to the held-out test workbook for final evaluation. The internal fold split is generated from `excel_train_dir` with `StratifiedKFold`; therefore, users requiring patient-disjoint internal folds should ensure one row per patient in the training workbook or adapt the fold splitter.
 
 Dataset routing, Excel input files, output directories, and pipeline phase are all YAML-controlled.
 No command-line arguments are required beyond specifying the config itself.
@@ -228,7 +224,7 @@ directories:
 ```
 - `phase`: controls whether to run training, testing, or both sequentially.
 - `base_model_name`: controls which trained model to use if running inference independently.
-- All results (checkpoints, logs, CSVs, plots, TensorBoard summaries) are saved to timestamped subfolders under `result_dir`.
+- All results (checkpoints, logs, Excel workbooks, plots, TensorBoard summaries) are saved to timestamped subfolders under `result_dir`.
 
 **Data Loading**
 ```
@@ -263,7 +259,7 @@ data:
   clip: null
   clip_percentile: [0.5, 99]
   normalize: True
-  resize: [128, 256, 256] # DHW
+  resize: [64, 128, 128] # DHW
   resize_method: 'interpolation'
   resize_pad_value: 0
 ```
@@ -280,45 +276,56 @@ data:
 Augmentations are optional and flexible, pulling from both NumPy and MONAI libraries. They can be enabled directly in YAML:
 ```
 transform:
-  do_transform: True 
+  do_transform: True
+  transform_mode: shared_spatial
   transform_keys: ["transform1", "transform1", "transform1"]
+  shared_transform_key: transform1
+
+  input_types: ["image", "mask", "image"]
+  intensity_apply_to: images
+  intensity_sync_across_inputs: True
+  mask_interpolation: nearest
+  force_mask_nearest: True
+  left_right_spatial_axis: 2
+  label_swap_after_flip: null
+
   transform1:
-      RandFlip:
-        spatial_axis: 0
-        prob: 0.5
-      RandRotate:
-        range_x: 0.25
-        range_y: 0.25
-        range_z: 0.25
-        keep_size: True
-        mode: nearest # bilinear
-        prob: 0.5
-      RandScaleIntensity:
-        factors: [0.95, 1.05]
-        prob: 0.5
-      RandGaussianNoise:
-        mean: 0.0
-        std: 0.02
-        prob: 0.5
-      RandBiasField:
-        coeff_range: [0.1, 0.3]
-        prob: 0.5
-      RandGaussianSmooth:
-        sigma_x: [0.3, 0.3]
-        sigma_y: [0.3, 0.3]
-        sigma_z: [0.3, 0.3]
-        prob: 0.5
-        
+    RandFlip:
+      spatial_axis: 2
+      prob: 0.5
+    RandRotate:
+      range_x: 0.25
+      range_y: 0.25
+      range_z: 0.25
+      keep_size: True
+      mode: bilinear
+      prob: 0.5
+    RandScaleIntensity:
+      factors: [0.95, 1.05]
+      prob: 0.5
+    RandGaussianNoise:
+      mean: 0.0
+      std: 0.02
+      prob: 0.5
+    RandBiasField:
+      coeff_range: [0.1, 0.3]
+      prob: 0.5
+    RandGaussianSmooth:
+      sigma_x: [0.3, 0.3]
+      sigma_y: [0.3, 0.3]
+      sigma_z: [0.3, 0.3]
+      prob: 0.5
+
   transform2: null
 ```
-- `transform_keys`: allows user to specify which transform operations to perform on specific inputs
+- `shared_spatial` samples spatial transforms once per case and applies them consistently across all input streams. Legacy modes are retained only for historical reproducibility and do not guarantee stream alignment.
 
 ## Usage
 
 ### Training and Inference
 To run training, use the following command:
 ```
-python trainer_multiImageNet_v1_1.py --config configs/multi_input_example.yaml
+python trainer_multiImageNet_v1_1.py --config config/template_trainer_multiImageNet.yaml
 ```
 
 - Training, inference, or both will run depending on which phase the user specifies in the YAML file.
@@ -329,7 +336,7 @@ python trainer_multiImageNet_v1_1.py --config configs/multi_input_example.yaml
 TKV AutoQC generates:
 - Loss, learning rate, and accuracy curves
 - Confusion matrices 
-- CSV files with predicted labels and scores
+- Excel workbooks with predicted labels and scores
 - TensorBoard summaries
 
 Example plots:
@@ -381,4 +388,3 @@ This repository continues to be maintained as a joint effort within the Kline La
 ## Citation
 
 (Include once published.)
-

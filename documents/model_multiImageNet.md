@@ -1,3 +1,4 @@
+# MultiImageNet
 
 MultiImageNet is a flexible **multi-backbone classification model** designed for 2D and 3D medical imaging tasks.  
 It processes multiple input images through multiple feature extractors (backbones), concatenates their feature vectors, and performs final prediction using a unified classification head.

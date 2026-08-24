@@ -13,6 +13,10 @@ import pandas as pd
 #        - label presence on the last slice
 #        - contact with image boundaries (x/y/z sides)
 #
+# These findings are descriptive QC metadata. They do not automatically exclude
+# a case from train, validation, or test; the curation script controls whether
+# coverage flags are used as an optional cohort filter.
+#
 # Expected directory layout for images:
 #   image_root_dir/
 #       Accept/

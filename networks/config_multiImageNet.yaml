@@ -1,23 +1,23 @@
 Backbone1:
-  modelclass: MedicalNetResNet18FeaturesV2
+  modelclass: DenseNetFeatures
   inputs:
-    #model_name: resnet18 # supports resnet18, resnet34, resnet50, resnet101, resnet152
+    model_name: DenseNet121 # supports resnet18, resnet34, resnet50, resnet101, resnet152, densenet121
     in_channels: 1
     flatten: true
-    pretrained_path: /scratch/abbydev/dtcls_repo_v2/weights/resnet_18_23dataset.pth
+    #pretrained_path:
     
 Backbone2: 
-  modelclass: MedicalNetResNet18FeaturesV2
+  modelclass: DenseNetFeatures
   inputs:
-    #model_name: resnet18 # supports resnet18, resnet34, resnet50, resnet101, resnet152
+    model_name: DenseNet121 # supports resnet18, resnet34, resnet50, resnet101, resnet152, densenet121
     in_channels: 1
     flatten: true
-    pretrained_path: /scratch/abbydev/dtcls_repo_v2/weights/resnet_18_23dataset.pth
+    #pretrained_path:
     
 Backbone3:
-  modelclass: MedicalNetResNet18FeaturesV2
+  modelclass: DenseNetFeatures
   inputs:
-    #model_name: resnet18 # supports resnet18, resnet34, resnet50, resnet101, resnet152
+    model_name: DenseNet121 # supports resnet18, resnet34, resnet50, resnet101, resnet152, densenet121
     in_channels: 1
     flatten: true
-    pretrained_path: /scratch/abbydev/dtcls_repo_v2/weights/resnet_18_23dataset.pth
+    #pretrained_path:

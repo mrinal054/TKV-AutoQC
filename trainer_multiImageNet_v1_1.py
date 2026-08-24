@@ -818,7 +818,7 @@ if config.phase == "train" or config.phase == "both":
                 weights = torch.tensor(
                     config.loss.weights, 
                     dtype=torch.float32,
-                    device=device
+                    device=DEVICE
                 )
             else: weights = None
             
@@ -861,6 +861,16 @@ if config.phase == "train" or config.phase == "both":
                 os.makedirs(checkpoint_loc, exist_ok=True)  
                 
                 initial_epoch =  0
+            
+            # Save the last-epoch checkpoint separately so the best-model
+            # directory contains only the checkpoint used for inference.
+            last_checkpoint_loc = os.path.join(
+                result_dir,
+                base_model_name,
+                "last_checkpoints",
+                kfold_model_name,
+            )
+            os.makedirs(last_checkpoint_loc, exist_ok=True)
             
             fold_writer_dir = os.path.join(writer_dir, f'fold_{fold}')
             writer = SummaryWriter(log_dir=fold_writer_dir)
@@ -1107,9 +1117,16 @@ if config.phase == "train" or config.phase == "both":
                 print(f"GPU memory allocation: allocated={a:.2f} GB reserved={r:.2f} GB")
 
             if not EARLY_STOP and SAVE_LAST_MODEL:
-                print('Saving last model')
-                save(os.path.join(checkpoint_loc, 'last_model' + '.pth'),
-                        epoch+1, model, optimizer)
+                print("Saving last model")
+                save(
+                    os.path.join(
+                        last_checkpoint_loc,
+                        "last_model.pth",
+                    ),
+                    epoch + 1,
+                    model,
+                    optimizer,
+                )
     
             print('Best model epoch:', best_model_epoch)
             print('Min validation loss:', np.min(store_val_loss)) 

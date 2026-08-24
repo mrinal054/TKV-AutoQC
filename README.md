@@ -221,10 +221,10 @@ phase: train # either train, test, or both
 classification_type: multiclass # either binary, multiclass or multilabel
 
 directories:
-  root: /scratch/abbydev/dtcls_repo_v2/
+  root: /path/to/TKV-AutoQC/
   excel_train_dir: /path/to/train.xlsx
-  excel_test_dir: /path/to/val_or_test.xlsx
-  result_dir: /path/to/output_directory/
+  excel_test_dir: /path/to/test.xlsx
+  result_dir: /path/to/results/
 ```
 - `phase`: controls whether to run training, testing, or both sequentially.
 - `base_model_name`: controls which trained model to use if running inference independently.

@@ -1,15 +1,9 @@
 # ResNet-based
 from networks.resnet import ResNetClassifier, ResNetFeatures
 from networks.densenet import DenseNetClassifier, DenseNetFeatures
-from networks.medicalnet_resnet18 import MedicalNetResNet18Classifier, MedicalNetResNet18FeaturesV2
 
 # VGG-based
 from networks.vgg16 import VGG16Classifier, VGG16Features3DV2
-from networks.vgg16_multitask import VGG16MultiTask
-
-# CLIP-based
-from networks.ctclip import ImageLatentsClassifier
-from networks.ctclip_v2 import ImageLatentsClassifierV2
 
 # Others
 from networks.multiImageNet import MultiImageNet

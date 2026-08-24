@@ -42,9 +42,9 @@
 
 ## trainer_multiImageNet_v1
 - Designed for **multi-image models** (e.g., MultiImageNet).
-- Uses [loaderv5](https://gitlab.mayo.edu/kline-lab/dtcls_repo/-/blob/main/dataloader/loaderv5.py?ref_type=heads) as the multi-image dataloader.
-- Here is a sample config file: [sample_config](https://gitlab.mayo.edu/kline-lab/dtcls_repo/-/blob/main/config/template_trainer_multiImageNet.yaml?ref_type=heads).
-- Supports **separate transforms** for each input image.
+- Uses [loaderv5](../dataloader/loaderv5.py) as the multi-image dataloader.
+- Here is a sample config file: [sample_config](../config/template_trainer_multiImageNet.yaml).
+- Supports **synchronized transforms** for each input image. The recommended 'shared_spatial' mode samples spatial transforms once per case and applies them synchronously across input streams.
 - Allows **freezing** and **scheduled unfreezing** of backbone.
 - Provides full **k-fold CV**: sequential runs, multi-GPU fold distribution, or custom fold lists (e.g., `[1,3,5]`).
 - Saves best checkpoints under:  

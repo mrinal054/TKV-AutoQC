@@ -130,12 +130,15 @@ def create_initial_logs():
                 print(f"No segmentation found for image base: {img_base}")
                 seg_path = ""
 
+            segmentation_found = bool(seg_path and os.path.isfile(seg_path))
             records.append({
                 "Names": img_fname,
                 "Directories": os.path.join(subfolder, img_fname),
                 "Labels": label_int,
                 "Str_Labels": label_str,
-                "Seg_dirs": seg_path
+                "Seg_dirs": seg_path,
+                "Segmentation_Found": segmentation_found,
+                "Analysis_Status": "Pending" if segmentation_found else "Missing_Segmentation",
             })
 
         df = pd.DataFrame(records)
@@ -170,16 +173,35 @@ def analyze_segmentations():
         for c in new_cols:
             df[c] = 0 if c.endswith(("_Voxels", "_mm2")) else ""
 
+        # Backward-compatible status columns prevent missing or unreadable
+        # segmentations from being classified as cases with no coverage finding.
+        if "Segmentation_Found" not in df.columns:
+            df["Segmentation_Found"] = False
+        if "Analysis_Status" not in df.columns:
+            df["Analysis_Status"] = "Pending"
+
         for idx, row in df.iterrows():
-            # Skip rows that do not have a valid segmentation path.
-            seg_path = str(row.get("Seg_dirs", "")).strip()
+            seg_value = row.get("Seg_dirs", "")
+            seg_path = "" if pd.isna(seg_value) else str(seg_value).strip()
+
             if not seg_path or not os.path.isfile(seg_path):
+                df.at[idx, "Segmentation_Found"] = False
+                df.at[idx, "Analysis_Status"] = "Missing_Segmentation"
                 continue
 
+            df.at[idx, "Segmentation_Found"] = True
+
             # Load segmentation volume and compute in-plane area.
-            seg_img = nib.load(seg_path)
-            seg_data = seg_img.get_fdata()
-            area_per_voxel = _inplane_area_per_voxel_mm2(seg_img)
+            try:
+                seg_img = nib.load(seg_path)
+                seg_data = seg_img.get_fdata()
+                area_per_voxel = _inplane_area_per_voxel_mm2(seg_img)
+            except Exception as exc:
+                df.at[idx, "Analysis_Status"] = "Read_Error"
+                print(f"Could not analyze segmentation {seg_path}: {exc}")
+                continue
+
+            df.at[idx, "Analysis_Status"] = "Complete"
 
             # Inspect the first and last slices only.
             first_slice = seg_data[:, :, 0]

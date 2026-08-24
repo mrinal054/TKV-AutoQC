@@ -496,6 +496,10 @@ for split_name, df_split in all_splits.items():
 
         # Copy the image file into the destination split/class folder.
         copied_img = safe_copy(img_src, dst_folder)
+        if copied_img is None:
+            raise FileNotFoundError(
+                f"Could not copy image for {fname}. Check images_root and source logs."
+            )
 
         # Copy the segmentation file. If the absolute path in Seg_dirs is not
         # valid, fall back to resolving the basename relative to images_root.
@@ -506,6 +510,10 @@ for split_name, df_split in all_splits.items():
             else os.path.join(images_root, cls, seg_name)
         )
         copied_seg = safe_copy(seg_src_norm, dst_folder) if seg_name else None
+        if copied_seg is None:
+            raise FileNotFoundError(
+                f"Could not copy segmentation for {fname}. Check Seg_dirs and source files."
+            )
 
         # Preserve the existing output column names so downstream scripts remain
         # compatible with prior datasets.

@@ -53,10 +53,37 @@ for fname in os.listdir(seg_analysis_dir):
 if not all_dfs:
     raise ValueError("No seg_analysis spreadsheets found in directory.")
 
-# Concatenate all source files into one dataframe for summary calculations.
+# Concatenate all source files into one dataframe.
 df_all = pd.concat(all_dfs, ignore_index=True)
-total_unique = df_all["Names"].nunique()
-total_rows = pd.DataFrame({"Total_Unique_Filenames": [total_unique]})
+
+# Older analysis workbooks remain supported. When status fields are absent,
+# infer validity from the segmentation path.
+if "Segmentation_Found" not in df_all.columns:
+    df_all["Segmentation_Found"] = (
+        df_all["Seg_dirs"].notna()
+        & df_all["Seg_dirs"].astype(str).str.strip().ne("")
+    )
+if "Analysis_Status" not in df_all.columns:
+    df_all["Analysis_Status"] = df_all["Segmentation_Found"].map(
+        {True: "Complete", False: "Missing_Segmentation"}
+    )
+
+valid_mask = (
+    df_all["Segmentation_Found"].fillna(False).astype(bool)
+    & df_all["Analysis_Status"].eq("Complete")
+)
+df_valid = df_all[valid_mask].copy()
+invalid_df = df_all[~valid_mask].copy()
+
+if df_valid.empty:
+    raise ValueError("No successfully analyzed segmentations were found.")
+
+total_unique = df_valid["Names"].nunique()
+total_rows = pd.DataFrame({
+    "Total_Unique_Filenames": [df_all["Names"].nunique()],
+    "Valid_Unique_Filenames": [total_unique],
+    "Invalid_Unique_Filenames": [invalid_df["Names"].nunique()],
+})
 
 # =============================================================================
 # Summary-sheet helper
@@ -77,6 +104,11 @@ def create_abv_sheet(df, threshold=0):
                 "Values": ", ".join(str(row[col]) for col in over_thresh_cols),
                 "Str_Label": row["Str_Labels"]
             })
+    if not records:
+        return pd.DataFrame(
+            columns=["Names", "Columns", "Values", "Str_Label"]
+        )
+
     df_records = pd.DataFrame(records)
     df_grouped = df_records.groupby("Names", as_index=False).agg({
         "Columns": lambda x: ", ".join(sorted(set(", ".join(x).split(", ")))) ,
@@ -85,7 +117,7 @@ def create_abv_sheet(df, threshold=0):
     })
     return df_grouped
 
-abv0_df  = create_abv_sheet(df_all, 0)
+abv0_df = create_abv_sheet(df_valid, 0)
 
 # =============================================================================
 # Statistics helpers
@@ -94,7 +126,10 @@ def generate_stats_table(df_grouped, total_count, filename_col="Names"):
     # Return count plus percentages relative to the current denominator and the
     # global total. Percentages are also returned even when only the count is
     # used by the caller.
-    count_unique = df_grouped[filename_col].nunique()
+    if df_grouped.empty or filename_col not in df_grouped.columns:
+        count_unique = 0
+    else:
+        count_unique = df_grouped[filename_col].nunique()
     pct_class = count_unique / total_count if total_count > 0 else 0
     pct_global = count_unique / total_unique if total_unique > 0 else 0
     return count_unique, pct_class, pct_global
@@ -164,17 +199,17 @@ abv0_stats_tables = {}
 
 for lbl in labels + ["Total"]:
     if lbl == "Total":
-        df_subset = df_all
+        df_subset = df_valid
         denom_count = total_unique
     else:
-        df_subset = df_all[df_all["Str_Labels"].str.contains(lbl)]
+        df_subset = df_valid[df_valid["Str_Labels"].str.contains(lbl)]
         denom_count = df_subset["Names"].nunique()
     abv0_stats_tables[lbl] = generate_detailed_stats(df_subset, threshold=0, denom_count=denom_count)
 
 # =============================================================================
 # Build All_Files_Info sheet
 # =============================================================================
-df_all_info = df_all.copy()
+df_all_info = df_valid.copy()
 all_records = []
 for _, row in df_all_info.iterrows():
     types_set = set()
@@ -215,7 +250,7 @@ extra_cols = ["Names", "Directories", "Seg_dirs"]
 # Clean files have no recorded first/last-slice or edge-touch finding. The
 # Coverage_Status column preserves this QC category for downstream auditing.
 clean_df = all_files_info_df[all_files_info_df["Type"] == ""].copy()
-clean_df = clean_df.merge(df_all[extra_cols], on="Names", how="left")
+clean_df = clean_df.merge(df_valid[extra_cols], on="Names", how="left")
 clean_df = clean_df.drop(columns=["Type", "Label"]).sort_values("Str_Label")
 clean_df["Coverage_Status"] = "No_Coverage_Flag"
 clean_df = clean_df[["Names", "Directories", "Str_Label", "Seg_dirs", "Coverage_Status"]]
@@ -223,7 +258,7 @@ clean_df = clean_df[["Names", "Directories", "Str_Label", "Seg_dirs", "Coverage_
 # LabelOrTouch files contain at least one first/last-slice or edge-touch finding.
 # These cases remain eligible by default in the public from-scratch workflow.
 label_or_touch_df = all_files_info_df[all_files_info_df["Type"] != ""].copy()
-label_or_touch_df = label_or_touch_df.merge(df_all[extra_cols], on="Names", how="left")
+label_or_touch_df = label_or_touch_df.merge(df_valid[extra_cols], on="Names", how="left")
 label_or_touch_df = label_or_touch_df.sort_values("Str_Label")
 label_or_touch_df["Coverage_Status"] = "Coverage_Flag"
 label_or_touch_df = label_or_touch_df[[
@@ -249,3 +284,4 @@ with pd.ExcelWriter(summary_excel_path, engine="xlsxwriter") as writer:
 with pd.ExcelWriter(tracking_excel_path, engine="xlsxwriter") as writer:
     _write_bold_excel(clean_df, writer, "Clean_Files")
     _write_bold_excel(label_or_touch_df, writer, "LabelOrTouch_Files")
+    _write_bold_excel(invalid_df, writer, "Invalid_Files")

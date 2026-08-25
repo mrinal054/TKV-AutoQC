@@ -5,7 +5,7 @@ Created on Tue Feb 25 19:30:08 2025
 
 This code follows (D,H,W) format.
 
-@author: M324371
+@author: Mrinal Kanti Dhar
 """
 
 import SimpleITK as sitk

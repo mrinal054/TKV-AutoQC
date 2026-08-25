@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Environments
+.env
+.venv/
+venv/
+
+# Medical imaging data
+*.nii
+*.nii.gz
+*.dcm
+
+# Patient-level manifests and generated tables
+*.xlsx
+*.xls
+*.csv
+*.tsv
+
+# Model artifacts
+*.pth
+*.pt
+*.ckpt
+weights/
+checkpoints/
+
+# Training outputs
+results/
+logs/
+runs/
+tensorboard/
+*.tfevents.*
+
+# Archives
+*.zip
+*.tar
+*.tar.gz

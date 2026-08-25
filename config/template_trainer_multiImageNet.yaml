@@ -42,7 +42,8 @@ train:
 
 test:
   base_model_name: null  
-  type: average
+  type: average  
+  output_subdir: results_test # Use a different value for validation and final test inference so results are not overwritten.
 
 phase: train
 

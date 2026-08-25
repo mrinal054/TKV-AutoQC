@@ -45,7 +45,7 @@ test:
   type: average  
   output_subdir: results_test # Use a different value for validation and final test inference so results are not overwritten.
 
-phase: train
+phase: train # either train, test, or both
 
 classification_type: multiclass # either binary, multiclass or multilabel
 

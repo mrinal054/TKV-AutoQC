@@ -2,8 +2,7 @@
 MONAI DenseNet implementation:
 https://docs.monai.io/en/stable/networks.html#densenet
 """
-# import sys
-# sys.path.append("/research/m324371/Project/Digital_Twin/Classification/utils/")
+import sys
 
 import torch
 import torch.nn as nn

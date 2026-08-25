@@ -407,9 +407,7 @@ preprocessing options—have been developed collaboratively by
 This repository continues to be maintained as a joint effort within the Kline Lab.
 
 ## License
-
-
-
+[MIT License](https://github.com/mrinal054/TKV-AutoQC/blob/main/LICENSE)
 
 ## Associated Publication
 

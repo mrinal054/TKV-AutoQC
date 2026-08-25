@@ -163,7 +163,7 @@ class MultiImageNet(nn.Module):
             
 """ Example usage
 # To perform a test run with this model, run the following code 
-# from the base directory (/research/m324371/Project/Digital_Twin/Classification/)
+# from the base directory (/path/to/base/)
 
 import os
 import networks

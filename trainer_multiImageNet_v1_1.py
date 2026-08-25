@@ -1247,6 +1247,8 @@ if config.phase == "both" or config.phase == "test":
         test_output_subdir,
     )
 
+    os.makedirs(test_save_dir, exist_ok=True)
+
     # # Find the best model name from the k-fold summary report
     # excel_fullfile = os.path.join(result_dir, base_model_name, 'training_records.xlsx')
     

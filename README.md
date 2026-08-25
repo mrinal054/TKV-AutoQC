@@ -146,7 +146,7 @@ All preprocessing, model architecture, and training behavior is controlled via Y
 model:
   name: MultiImageNet
   subname: null
-  suffix: DenseNet121_cosine_warmup_augfix_BINMASK
+  suffix: DenseNet121_cosine_warmup_BINMASK
   in_channels: 1
   out_channels: null
   dropout: 0.25
@@ -179,7 +179,7 @@ train:
   weight_decay: 0.001
   save_weights_only: True
   save_best_model: True 
-  save_last_model: False  # Safe default until last checkpoints are stored separately
+  save_last_model: False  
   one_hot: False
   period: 20
   early_stop: False
@@ -191,7 +191,7 @@ train:
   run_folds: [0] 
   retrain: 
     resume_train: False
-    resume_folds: [1] # must be a list 
+    resume_folds: [0] # must be a list 
   device: cuda
 ```
 - Optimizers, `adam`, `adamw`
@@ -231,11 +231,27 @@ directories:
 data:
   dataloader: loaderv5
   label_column: Labels
+
+  # Three model inputs:
+  # 0 = full scan
+  # 1 = binary segmentation mask
+  # 2 = masked scan
   dir_column: [Directories_1, Seg_dirs, Directories_2]
+
+  # Input 2 itself is processed as a binary kidney mask.
+  input_types: ["image", "mask", "image"]
+  preserve_mask_labels: True
+  mask_input_modes: [null, "binary", null]
+  mask_keep_values: [null, [1, 2], null]
+
+  # This separately controls ROI masking for input 3.
+  binary_mask: [null, null, [1, 2]]
   mask_column: [null, null, Seg_dirs]
-  binary_mask: [null, null, [1,2]]
+
   n_workers: 8
 ```
+- 'mask_input_modes' / 'mask_keep_values' control how the second input itself is represented
+- 'binary_mask' / 'mask_column' control multiplication of the third image input to create the kidney ROI
 - `binary_mask`: if provided, the mask will be binarized with the labels given and multiplied with its corresponding entry in `dir_column`
 
 **Excel column mapping:**
@@ -348,14 +364,24 @@ All results are written to timestamped folders under the folder specified in the
  
 ## FAQ 
 
-**How do I change architectures?**
+**How do I change the MultiImageNet backbone architecture?**
 
-Modify the config:
-```
+Keep:
+
+```yaml
 model:
-  name: ViTClassifier
+  name: MultiImageNet
 ```
-or any supported model.
+Then edit 'networks/config_multiImageNet.yaml'. Each 'Backbone' entry must specify a model class exported by 'networks/__init__.py' and parameters accepted by that feature extractor. For example, a ResNet18 branch is:
+
+```yaml
+Backbone1:
+  modelclass: ResNetFeatures
+  inputs:
+    model_name: resnet18
+    in_channels: 1
+    flatten: true
+```
 
 **How do I reduce overfitting?**
 
@@ -385,6 +411,24 @@ This repository continues to be maintained as a joint effort within the Kline La
 
 
 
+## Associated Publication
+
+This repository accompanies the following publication:
+
+Green, A. E., Dhar, M. K., Gregory, A. V., et al. (2026).
+**Downstream-Aware Automated QC of Images and AI-Generated Segmentations.**
+*Journal of Imaging Informatics in Medicine*.
+https://doi.org/10.1007/s10278-026-02156-y
+
 ## Citation
 
-(Include once published.)
+If you use this repository, please cite the associated publication:
+
+```bibtex
+@article{green2026downstream,
+  title   = {Downstream-Aware Automated QC of Images and AI-Generated Segmentations},
+  author  = {Green, Abigail E. and Dhar, Mrinal K. and Gregory, Adriana V. and others},
+  journal = {Journal of Imaging Informatics in Medicine},
+  year    = {2026},
+  doi     = {10.1007/s10278-026-02156-y}
+}

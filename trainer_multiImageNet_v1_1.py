@@ -1236,8 +1236,16 @@ if config.phase == "both" or config.phase == "test":
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=N_WORKERS)
 
     # Test save directory
-    test_save_dir = os.path.join(result_dir, base_model_name, 'results_TESTSET_test')
-    os.makedirs(test_save_dir, exist_ok=True)
+    test_output_subdir = config.test.get(
+        "output_subdir",
+        "results_test",
+    )
+    
+    test_save_dir = os.path.join(
+        result_dir,
+        base_model_name,
+        test_output_subdir,
+    )
 
     # # Find the best model name from the k-fold summary report
     # excel_fullfile = os.path.join(result_dir, base_model_name, 'training_records.xlsx')
